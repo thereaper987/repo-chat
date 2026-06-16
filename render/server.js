@@ -16,7 +16,7 @@ const execPromise = util.promisify(exec);
 // ============================================
 
 const CONFIG = {
-    API_SECRET: process.env.API_SECRET || 'kushalkumarjthegreat',
+    API_SECRET: process.env.API_SECRET,
     MAX_SESSIONS: parseInt(process.env.MAX_SESSIONS) || 3,
     SESSION_TIMEOUT: parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000,
     EXECUTION_TIMEOUT: parseInt(process.env.EXECUTION_TIMEOUT) || 7200,
@@ -27,7 +27,7 @@ const CONFIG = {
     COLAB_AUTH_TOKEN: process.env.COLAB_AUTH_TOKEN,
     PORT: process.env.PORT || 3000,
     NODE_ENV: process.env.NODE_ENV || 'development',
-    LOG_LEVEL: process.env.LOG_LEVEL || 'debug'  // Changed to debug for full logs
+    LOG_LEVEL: process.env.LOG_LEVEL || 'debug'
 };
 
 // ============================================
@@ -46,9 +46,10 @@ class Logger {
             trace: '\x1b[90m',
             reset: '\x1b[0m',
             bright: '\x1b[1m',
-            session: '\x1b[32m',   // Green for session IDs
-            exec: '\x1b[33m',      // Yellow for execution IDs
-            code: '\x1b[36m'       // Cyan for code
+            session: '\x1b[32m',
+            exec: '\x1b[33m',
+            code: '\x1b[36m',
+            output: '\x1b[37m'
         };
     }
 
@@ -58,7 +59,6 @@ class Logger {
         const reset = this.colors.reset;
         const bright = this.colors.bright;
         
-        // Format meta with color coding
         let metaStr = '';
         if (Object.keys(meta).length > 0) {
             const parts = [];
@@ -75,7 +75,7 @@ class Logger {
                 delete meta.cellNo;
             }
             if (meta.code) {
-                const codeSnippet = meta.code.length > 100 ? meta.code.substring(0, 100) + '...' : meta.code;
+                const codeSnippet = meta.code.length > 200 ? meta.code.substring(0, 200) + '...' : meta.code;
                 parts.push(`${bright}💻 CODE:${reset}${this.colors.code}\n${codeSnippet}${reset}`);
                 delete meta.code;
             }
@@ -87,20 +87,39 @@ class Logger {
                 parts.push(`${bright}⏱️  DURATION:${reset} ${meta.duration}ms`);
                 delete meta.duration;
             }
+            if (meta.fullOutput !== undefined) {
+                const outputLines = meta.fullOutput.split('\n').length;
+                const outputPreview = meta.fullOutput.length > 500 ? meta.fullOutput.substring(0, 500) + '...' : meta.fullOutput;
+                parts.push(`${bright}📤 FULL OUTPUT (${outputLines} lines, ${meta.fullOutput.length} chars):${reset}${this.colors.output}\n${outputPreview}${reset}`);
+                delete meta.fullOutput;
+            }
             if (meta.output) {
-                const outputSnippet = meta.output.length > 200 ? meta.output.substring(0, 200) + '...' : meta.output;
-                parts.push(`${bright}📤 OUTPUT:${reset}\n${outputSnippet}`);
+                const outputLines = meta.output.split('\n').length;
+                const outputPreview = meta.output.length > 500 ? meta.output.substring(0, 500) + '...' : meta.output;
+                parts.push(`${bright}📤 OUTPUT (${outputLines} lines, ${meta.output.length} chars):${reset}${this.colors.output}\n${outputPreview}${reset}`);
                 delete meta.output;
             }
             if (meta.error) {
-                const errorSnippet = meta.error.length > 200 ? meta.error.substring(0, 200) + '...' : meta.error;
-                parts.push(`${bright}❌ ERROR:${reset}\n${errorSnippet}`);
+                const errorPreview = meta.error.length > 500 ? meta.error.substring(0, 500) + '...' : meta.error;
+                parts.push(`${bright}❌ ERROR:${reset}\n${errorPreview}`);
                 delete meta.error;
+            }
+            if (meta.exitCode !== undefined) {
+                parts.push(`${bright}🚪 EXIT CODE:${reset} ${meta.exitCode}`);
+                delete meta.exitCode;
+            }
+            if (meta.stdoutSize !== undefined) {
+                parts.push(`${bright}📤 STDOUT SIZE:${reset} ${meta.stdoutSize} bytes`);
+                delete meta.stdoutSize;
+            }
+            if (meta.stderrSize !== undefined) {
+                parts.push(`${bright}📤 STDERR SIZE:${reset} ${meta.stderrSize} bytes`);
+                delete meta.stderrSize;
             }
             // Remaining meta
             for (const [key, value] of Object.entries(meta)) {
-                if (value !== undefined && value !== null) {
-                    parts.push(`${bright}${key}:${reset} ${JSON.stringify(value)}`);
+                if (value !== undefined && value !== null && typeof value !== 'object') {
+                    parts.push(`${bright}${key}:${reset} ${value}`);
                 }
             }
             metaStr = parts.length > 0 ? `\n  ${parts.join('\n  ')}` : '';
@@ -154,25 +173,27 @@ class Logger {
         });
     }
     
-    executionCompleted(sessionId, executionId, cellNo, duration, status, output, error) {
+    executionCompleted(sessionId, executionId, cellNo, duration, status, fullOutput, error, exitCode) {
         this.info(`✅ EXECUTION COMPLETED`, {
             sessionId,
             executionId,
             cellNo,
             duration,
             status,
-            output: output ? output.substring(0, 500) : undefined,
-            error: error ? error.substring(0, 500) : undefined,
+            fullOutput: fullOutput || '(No output)',
+            exitCode: exitCode !== undefined ? exitCode : 0,
+            error: error || undefined,
             timestamp: new Date().toISOString()
         });
     }
     
-    executionFailed(sessionId, executionId, cellNo, duration, error) {
+    executionFailed(sessionId, executionId, cellNo, duration, error, fullOutput) {
         this.error(`❌ EXECUTION FAILED`, {
             sessionId,
             executionId,
             cellNo,
             duration,
+            fullOutput: fullOutput || '(No output)',
             error: error.substring(0, 500),
             timestamp: new Date().toISOString()
         });
@@ -468,7 +489,6 @@ async function setupColabAuth() {
             expiry: tokenData.expiry || 'unknown'
         });
         
-        // Convert to the format expected by colab-cli
         const cliTokenData = {
             access_token: accessToken,
             refresh_token: tokenData.refresh_token || '',
@@ -687,7 +707,6 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         throw new Error('Session not found');
     }
 
-    // Log code details
     logger.debug(`📝 CODE DETAILS`, {
         sessionId: sessionId.substring(0, 16),
         cellNo,
@@ -740,13 +759,9 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
             cellNo
         });
 
-        let stdoutChunks = 0;
-        let stderrChunks = 0;
-
         process.stdout.on('data', (data) => {
             const chunk = data.toString();
             stdout += chunk;
-            stdoutChunks++;
             const exec = sessionManager.activeExecutions.get(executionId);
             if (exec) {
                 exec.stdout = stdout;
@@ -756,31 +771,13 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
                     sessionManager.sessions.set(sessionId, sess);
                 }
             }
-            // Log every 10 chunks to avoid spam
-            if (stdoutChunks % 10 === 0) {
-                logger.trace(`📤 STDOUT chunk ${stdoutChunks}`, {
-                    executionId,
-                    sessionId: sessionId.substring(0, 16),
-                    chunkSize: chunk.length,
-                    totalSize: stdout.length
-                });
-            }
         });
 
         process.stderr.on('data', (data) => {
             const chunk = data.toString();
             stderr += chunk;
-            stderrChunks++;
             const exec = sessionManager.activeExecutions.get(executionId);
             if (exec) exec.stderr = stderr;
-            if (stderrChunks % 5 === 0) {
-                logger.trace(`📤 STDERR chunk ${stderrChunks}`, {
-                    executionId,
-                    sessionId: sessionId.substring(0, 16),
-                    chunkSize: chunk.length,
-                    totalSize: stderr.length
-                });
-            }
         });
 
         const result = await new Promise((resolve, reject) => {
@@ -867,14 +864,18 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         cellData.exitCode = result.exitCode;
         await sessionManager.appendSessionData(sessionId, cellData);
 
+        // ============================================
+        // ENHANCED: Log FULL output on completion
+        // ============================================
         logger.executionCompleted(
             sessionId, 
             executionId, 
             cellNo, 
             executionTime, 
             status,
-            result.stdout,
-            result.stderr
+            result.stdout || '(No output)',  // FULL OUTPUT
+            result.stderr || '',
+            result.exitCode
         );
 
         return output;
@@ -883,12 +884,16 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         const completedAt = Date.now();
         const executionTime = completedAt - startedAt;
         
+        // ============================================
+        // ENHANCED: Log FULL output on failure too
+        // ============================================
         logger.executionFailed(
             sessionId,
             executionId,
             cellNo,
             executionTime,
-            error.message || String(error)
+            error.message || String(error),
+            error.stdout || '(No output)'  // FULL OUTPUT
         );
         
         const failureResult = {
@@ -957,7 +962,6 @@ app.use(express.json({ limit: '10mb' }));
 
 // NO STATIC FILE SERVING - API ONLY
 
-// Request logging middleware
 app.use((req, res, next) => {
     const startTime = Date.now();
     const traceId = crypto.randomBytes(8).toString('hex');
@@ -971,7 +975,6 @@ app.use((req, res, next) => {
         userAgent: req.get('user-agent') || 'unknown'
     });
     
-    // Capture response
     const originalSend = res.send;
     res.send = function(data) {
         const duration = Date.now() - startTime;
@@ -1164,7 +1167,6 @@ app.post('/start', authMiddleware, async (req, res, next) => {
     logger.info(`🆕 SESSION CREATE REQUEST`, { traceId });
     
     try {
-        // Check max sessions
         if (sessionManager.sessions.size >= CONFIG.MAX_SESSIONS) {
             logger.warn(`⚠️ MAX SESSIONS REACHED`, {
                 traceId,
@@ -1396,7 +1398,6 @@ app.post('/status', authMiddleware, async (req, res) => {
         executionId: executionId.substring(0, 16)
     });
 
-    // Check completed executions
     if (sessionManager.completedExecutions.has(executionId)) {
         const record = sessionManager.completedExecutions.get(executionId);
         logger.trace(`✅ STATUS: COMPLETED`, {
@@ -1413,7 +1414,6 @@ app.post('/status', authMiddleware, async (req, res) => {
         });
     }
 
-    // Check active execution
     const active = sessionManager.activeExecutions.get(executionId);
     if (active) {
         const elapsed = Date.now() - active.startedAt;
@@ -1430,7 +1430,6 @@ app.post('/status', authMiddleware, async (req, res) => {
         });
     }
 
-    // Check session current execution
     const session = sessionManager.sessions.get(sessionId);
     if (session && session.currentExecution?.executionId === executionId) {
         const elapsed = Date.now() - session.currentExecution.startedAt;
