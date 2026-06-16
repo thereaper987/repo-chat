@@ -144,8 +144,6 @@ async function initColabBinary() {
 // COLAB CLI RUNNER
 // ============================================
 
-const execPromise = util.promisify(exec);
-
 async function runColabCli(args, timeout = 30000) {
     return new Promise((resolve, reject) => {
         let command;
