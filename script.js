@@ -1,5 +1,5 @@
 function wakeUp(attempt = 1) {
-  fetch('https://repo-chat-wkqk.onrender.com/health')
+  fetch('https://repo-chat-kdux.onrender.com/health')
     .then(res => res.text())
     .then(data => console.log('Response:', data))
     .catch(() => {
@@ -252,7 +252,7 @@ print("\\n📝 Usage:")`;
 // ============================================================
 // BACKEND CONFIG
 // ============================================================
-const BACKEND_URL = 'https://repo-chat-wkqk.onrender.com';
+const BACKEND_URL = 'https://repo-chat-kdux.onrender.com';
 let SECRET_KEY = localStorage.getItem('askrepo_key') || '';
 
 window.key = function(str) {
