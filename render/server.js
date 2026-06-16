@@ -1,7 +1,6 @@
 // ============================================
-// IMPROVED SERVER.JS - v2.0 (API-Only)
-// No Static File Serving - Backend Only
-// Optimized for Single User, 3 Frontend Apps
+// FIXED SERVER.JS - Compatible with token format
+// Uses "token" field instead of "access_token"
 // ============================================
 
 const express = require('express');
@@ -18,45 +17,23 @@ const app = express();
 const execPromise = util.promisify(exec);
 
 // ============================================
-// CONFIGURATION MANAGEMENT
+// CONFIGURATION
 // ============================================
 
-class Config {
-    constructor() {
-        this.API_SECRET = process.env.API_SECRET || 'kushalkumarjthegreat';
-        this.MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 3;
-        this.SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000;
-        this.EXECUTION_TIMEOUT = parseInt(process.env.EXECUTION_TIMEOUT) || 7200;
-        this.MAX_CODE_SIZE = parseInt(process.env.MAX_CODE_SIZE) || 3 * 1024 * 1024;
-        this.COMPLETED_EXECUTIONS_TTL = parseInt(process.env.COMPLETED_EXECUTIONS_TTL) || 10 * 60 * 1000;
-        this.POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL) || 15000;
-        this.MAX_CODE_LENGTH = parseInt(process.env.MAX_CODE_LENGTH) || 100000;
-        this.SESSIONS_BASE_DIR = process.env.SESSIONS_BASE_DIR || path.join(os.tmpdir(), 'colab_sessions');
-        this.COLAB_AUTH_TOKEN = process.env.COLAB_AUTH_TOKEN;
-        this.PORT = process.env.PORT || 3000;
-        this.NODE_ENV = process.env.NODE_ENV || 'development';
-        this.LOG_LEVEL = process.env.LOG_LEVEL || 'info';
-    }
-
-    validate() {
-        const errors = [];
-        if (!this.API_SECRET || this.API_SECRET.length < 8) {
-            errors.push('API_SECRET must be at least 8 characters');
-        }
-        if (this.MAX_SESSIONS < 1) {
-            errors.push('MAX_SESSIONS must be at least 1');
-        }
-        if (this.EXECUTION_TIMEOUT < 60) {
-            errors.push('EXECUTION_TIMEOUT must be at least 60 seconds');
-        }
-        if (errors.length > 0) {
-            throw new Error(`Configuration validation failed:\n${errors.join('\n')}`);
-        }
-        return true;
-    }
-}
-
-const CONFIG = new Config();
+const CONFIG = {
+    API_SECRET: process.env.API_SECRET || 'kushalkumarjthegreat',
+    MAX_SESSIONS: parseInt(process.env.MAX_SESSIONS) || 3,
+    SESSION_TIMEOUT: parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000,
+    EXECUTION_TIMEOUT: parseInt(process.env.EXECUTION_TIMEOUT) || 7200,
+    MAX_CODE_SIZE: parseInt(process.env.MAX_CODE_SIZE) || 3 * 1024 * 1024,
+    COMPLETED_EXECUTIONS_TTL: parseInt(process.env.COMPLETED_EXECUTIONS_TTL) || 10 * 60 * 1000,
+    POLL_INTERVAL: parseInt(process.env.POLL_INTERVAL) || 15000,
+    SESSIONS_BASE_DIR: process.env.SESSIONS_BASE_DIR || path.join(os.tmpdir(), 'colab_sessions'),
+    COLAB_AUTH_TOKEN: process.env.COLAB_AUTH_TOKEN,
+    PORT: process.env.PORT || 3000,
+    NODE_ENV: process.env.NODE_ENV || 'development',
+    LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+};
 
 // ============================================
 // SIMPLE LOGGER
@@ -66,41 +43,26 @@ class Logger {
     constructor(level = 'info') {
         this.levels = { error: 0, warn: 1, info: 2, debug: 3 };
         this.level = this.levels[level] ?? 2;
-        this.colors = {
-            error: '\x1b[31m',
-            warn: '\x1b[33m',
-            info: '\x1b[36m',
-            debug: '\x1b[35m',
-            reset: '\x1b[0m'
-        };
     }
 
-    _format(level, message, meta = {}) {
-        const timestamp = new Date().toISOString();
-        const color = this.colors[level] || '';
-        const reset = this.colors.reset;
-        const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-        return `${timestamp} ${color}[${level.toUpperCase()}]${reset} ${message}${metaStr}`;
+    log(level, message, meta = {}) {
+        if (this.level >= this.levels[level]) {
+            const timestamp = new Date().toISOString();
+            const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+            console.log(`${timestamp} [${level.toUpperCase()}] ${message}${metaStr}`);
+        }
     }
 
-    error(message, meta) {
-        if (this.level >= this.levels.error) console.error(this._format('error', message, meta));
-    }
-    warn(message, meta) {
-        if (this.level >= this.levels.warn) console.warn(this._format('warn', message, meta));
-    }
-    info(message, meta) {
-        if (this.level >= this.levels.info) console.log(this._format('info', message, meta));
-    }
-    debug(message, meta) {
-        if (this.level >= this.levels.debug) console.log(this._format('debug', message, meta));
-    }
+    error(message, meta) { this.log('error', message, meta); }
+    warn(message, meta) { this.log('warn', message, meta); }
+    info(message, meta) { this.log('info', message, meta); }
+    debug(message, meta) { this.log('debug', message, meta); }
 }
 
 const logger = new Logger(CONFIG.LOG_LEVEL);
 
 // ============================================
-// CORS CONFIGURATION
+// CORS
 // ============================================
 
 const allowedOrigins = [
@@ -157,17 +119,13 @@ function formatMemory(bytes) {
 
 function detectExitCode(output) {
     const systemExitMatch = output.match(/SystemExit:\s*(\d+)/);
-    if (systemExitMatch) {
-        return parseInt(systemExitMatch[1]);
-    }
-    if (output.includes('Traceback') || output.includes('Error:')) {
-        return 1;
-    }
+    if (systemExitMatch) return parseInt(systemExitMatch[1]);
+    if (output.includes('Traceback') || output.includes('Error:')) return 1;
     return 0;
 }
 
 // ============================================
-// COLAB BINARY MANAGER
+// COLAB BINARY MANAGER (Fixed - Like Original)
 // ============================================
 
 class ColabBinaryManager {
@@ -175,72 +133,35 @@ class ColabBinaryManager {
         this.binary = 'colab';
         this.usePythonModule = false;
         this.isInitialized = false;
-        this.binaryCache = null;
-        this.cacheTTL = 3600000; // 1 hour
     }
 
     async findBinary() {
         logger.info('Searching for colab binary...');
         
-        if (this.binaryCache && (Date.now() - this.binaryCache.timestamp) < this.cacheTTL) {
-            logger.debug('Using cached binary location', { path: this.binaryCache.path });
-            return this.binaryCache.path;
-        }
-
-        const searchMethods = [
-            () => this._whichColab(),
-            () => this._findPipModule(),
-            () => this._searchCommonPaths(),
-            () => this._checkPythonModule()
-        ];
-
-        for (const method of searchMethods) {
-            try {
-                const result = await method();
-                if (result) {
-                    this.binaryCache = { path: result, timestamp: Date.now() };
-                    return result;
-                }
-            } catch (error) {
-                logger.debug(`Binary search method failed: ${error.message}`);
+        try {
+            const { stdout } = await execPromise('which colab 2>/dev/null || echo ""', { timeout: 5000 });
+            if (stdout.trim()) {
+                logger.info(`Found colab via which: ${stdout.trim()}`);
+                return stdout.trim();
             }
-        }
+        } catch (e) {}
 
-        logger.warn('Colab binary not found, defaulting to python3 module');
-        return 'python3';
-    }
-
-    async _whichColab() {
-        const { stdout } = await execPromise('which colab 2>/dev/null || echo ""', { timeout: 5000 });
-        const path = stdout.trim();
-        if (path) {
-            logger.info(`Found colab via which: ${path}`);
-            return path;
-        }
-        return null;
-    }
-
-    async _findPipModule() {
         try {
             const { stdout } = await execPromise(
                 'pip3 show google-colab-cli 2>/dev/null | grep Location | cut -d" " -f2',
                 { timeout: 5000 }
             );
-            const location = stdout.trim();
-            if (location) {
-                const binaryPath = path.join(location, 'colab_cli/__main__.py');
+            if (stdout.trim()) {
+                const binaryPath = path.join(stdout.trim(), 'colab_cli/__main__.py');
                 try {
                     await fs.access(binaryPath);
                     logger.info(`Found colab via pip: ${binaryPath}`);
                     return 'python3';
-                } catch {}
+                } catch (e) {}
             }
-        } catch {}
-        return null;
-    }
+        } catch (e) {}
 
-    async _searchCommonPaths() {
-        const paths = [
+        const searchPaths = [
             '/opt/render/.local/bin',
             '/usr/local/bin',
             '/usr/bin',
@@ -249,31 +170,30 @@ class ColabBinaryManager {
             '/opt/render/project/src/.local/bin'
         ];
 
-        for (const searchPath of paths) {
+        for (const searchPath of searchPaths) {
             try {
                 const { stdout } = await execPromise(
                     `find ${searchPath} -name "colab" -type f 2>/dev/null | head -1`,
-                    { timeout: 5000 }
+                    { timeout: 10000 }
                 );
-                const result = stdout.trim();
-                if (result) {
-                    await execPromise(`chmod +x "${result}" 2>/dev/null || true`);
-                    logger.info(`Found colab via search: ${result}`);
-                    return result;
+                if (stdout.trim()) {
+                    logger.info(`Found colab via search: ${stdout.trim()}`);
+                    try {
+                        await execPromise(`chmod +x "${stdout.trim()}"`, { stdio: 'ignore' });
+                    } catch (e) {}
+                    return stdout.trim();
                 }
-            } catch {}
+            } catch (e) {}
         }
-        return null;
-    }
 
-    async _checkPythonModule() {
         try {
             await execPromise('python3 -c "import colab_cli" 2>/dev/null', { timeout: 5000 });
             logger.info('Found colab as Python module');
             return 'python3';
-        } catch {
-            return null;
-        }
+        } catch (e) {}
+
+        logger.warn('Colab binary not found, defaulting to python3 module');
+        return 'python3';
     }
 
     async initialize() {
@@ -354,7 +274,7 @@ class ColabBinaryManager {
 }
 
 // ============================================
-// AUTH SETUP
+// AUTH SETUP - FIXED FOR "token" FIELD
 // ============================================
 
 async function setupColabAuth() {
@@ -371,20 +291,37 @@ async function setupColabAuth() {
         }
 
         const tokenData = JSON.parse(rawToken);
-        if (!tokenData.access_token) {
-            throw new Error('Invalid token: missing access_token');
-        }
         
+        // FIX: Check for "token" field (your format) OR "access_token"
+        const accessToken = tokenData.token || tokenData.access_token;
+        if (!accessToken) {
+            logger.error('Auth setup failed: missing "token" or "access_token" field');
+            return false;
+        }
+
         logger.info('Parsed COLAB_AUTH_TOKEN successfully');
         
+        // Convert to the format expected by colab-cli
+        const cliTokenData = {
+            access_token: accessToken,
+            refresh_token: tokenData.refresh_token || '',
+            token_uri: tokenData.token_uri || 'https://oauth2.googleapis.com/token',
+            client_id: tokenData.client_id || '',
+            client_secret: tokenData.client_secret || '',
+            scopes: tokenData.scopes || [],
+            universe_domain: tokenData.universe_domain || 'googleapis.com',
+            account: tokenData.account || '',
+            expiry: tokenData.expiry || ''
+        };
+
         const configDir = path.join(os.homedir(), '.config/colab-cli');
         await fs.mkdir(configDir, { recursive: true });
         
         await fs.writeFile(
             path.join(configDir, 'token.json'), 
-            JSON.stringify(tokenData, null, 2)
+            JSON.stringify(cliTokenData, null, 2)
         );
-        logger.info('Written token.json');
+        logger.info('Written token.json with access_token');
 
         await fs.writeFile(
             path.join(configDir, 'sessions.json'), 
@@ -554,10 +491,6 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
 
     if (Buffer.byteLength(code, 'utf8') > CONFIG.MAX_CODE_SIZE) {
         throw new Error(`Code exceeds ${CONFIG.MAX_CODE_SIZE} bytes`);
-    }
-
-    if (code.length > CONFIG.MAX_CODE_LENGTH) {
-        throw new Error(`Code exceeds ${CONFIG.MAX_CODE_LENGTH} characters`);
     }
 
     const startedAt = Date.now();
@@ -736,15 +669,13 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
-// ❌ NO STATIC FILE SERVING - API ONLY
+// NO STATIC FILE SERVING - API ONLY
 
-// Simple request logging
 app.use((req, res, next) => {
     logger.debug(`${req.method} ${req.path}`);
     next();
 });
 
-// Auth middleware
 function authMiddleware(req, res, next) {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
@@ -753,7 +684,6 @@ function authMiddleware(req, res, next) {
     next();
 }
 
-// Error handling middleware
 app.use((err, req, res, next) => {
     const status = err.status || 500;
     logger.error(`Request error: ${err.message}`, { path: req.path, status });
@@ -764,10 +694,8 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// API ENDPOINTS (100% Compatible)
+// API ENDPOINTS
 // ============================================
-
-// --- HEALTH ---
 
 app.get('/health', (req, res) => {
     const memUsage = process.memoryUsage();
@@ -811,8 +739,6 @@ app.get('/health/simple', (req, res) => {
         sessions: sessionManager.sessions.size
     });
 });
-
-// --- DEBUG ENDPOINTS ---
 
 app.get('/debug/sessions', authMiddleware, async (req, res) => {
     const memUsage = process.memoryUsage();
@@ -893,8 +819,6 @@ app.get('/debug/sessions/:sessionId', authMiddleware, async (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
-
-// --- SESSION MANAGEMENT ---
 
 app.post('/start', authMiddleware, async (req, res, next) => {
     try {
@@ -996,8 +920,6 @@ app.post('/keepalive', authMiddleware, async (req, res, next) => {
         res.status(500).json({ error: 'Keepalive failed', details: error.message });
     }
 });
-
-// --- CODE EXECUTION ---
 
 app.post('/run', authMiddleware, async (req, res, next) => {
     const { sessionId, code, cellNo } = req.body;
@@ -1134,7 +1056,7 @@ app.delete('/session/:sessionId', authMiddleware, async (req, res, next) => {
 });
 
 // ============================================
-// 404 HANDLER - MUST BE LAST
+// 404 HANDLER
 // ============================================
 
 app.use((req, res) => {
@@ -1207,9 +1129,6 @@ const sessionManager = new SessionManager(CONFIG.SESSIONS_BASE_DIR);
 async function init() {
     try {
         logger.info('🚀 Initializing Colab Orchestrator v2.0 (API-Only)...');
-        
-        CONFIG.validate();
-        logger.info('✅ Configuration validated');
         
         await colab.initialize();
         
