@@ -21,7 +21,7 @@ const execPromise = util.promisify(exec);
 // ============================================
 
 const CONFIG = {
-    API_SECRET: process.env.API_SECRET || 'kushalkumarjthegreat',
+    API_SECRET: process.env.API_SECRET,
     MAX_SESSIONS: parseInt(process.env.MAX_SESSIONS) || 3,
     SESSION_TIMEOUT: parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000,
     EXECUTION_TIMEOUT: parseInt(process.env.EXECUTION_TIMEOUT) || 7200,
