@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>AskRepo · codebase Q&A</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-left">
+      <button class="hamburger" id="hamburgerBtn" title="Toggle setup panel">☰</button>
+      <h1>AskRepo <span class="header-title-small">codebase Q&A</span></h1>
+    </div>
+    <div class="header-actions">
+      <span id="sessionBadge" style="font-size:0.65rem;color:#64748b;display:none;"></span>
+      <button class="btn btn-danger btn-sm" id="endSessionBtn" style="display:none;">✕ End</button>
+    </div>
+  </div>
+
+  <!-- SETUP PANEL -->
+  <div class="setup-panel" id="setupPanel">
+    <div class="setup-grid">
+      <div class="setup-section">
+        <h3><span class="step-num" id="step1num">1</span> 🧩 Setup Ollama</h3>
+        <div class="setup-row">
+          <button class="btn btn-primary btn-sm" id="startBtn">▶ Start</button>
+          <button class="btn btn-danger btn-sm" id="stopBtn" disabled>⏹ Stop</button>
+          <span style="font-size:0.65rem;color:#64748b;" id="cellStatus">not started</span>
+        </div>
+        <div class="setup-status" id="setupStatus">⏳ Ready</div>
+        <div class="cell-output-preview" id="cellOutput">📋 Output will appear here...</div>
+      </div>
+
+      <div class="setup-section">
+        <h3><span class="step-num" id="step3num">3</span> 📦 Clone Repository</h3>
+        <div class="setup-row">
+          <input type="text" id="repoInput" placeholder="user/repo or URL" value="kushalkumarj2006/colab-orchestrator" />
+          <button class="btn btn-success btn-sm" id="confirmRepoBtn">✅</button>
+        </div>
+        <div class="repo-display" id="repoDisplay">📁 not set</div>
+        <div class="setup-status" id="repoStatus"></div>
+      </div>
+
+      <div class="setup-section" style="grid-column: 1 / -1;">
+        <h3><span class="step-num" id="step4num">4</span> 🚀 Index &amp; Ready</h3>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <span style="font-size:0.75rem;color:#94a3b8;" id="indexStatus">⏳ waiting</span>
+          <span style="font-size:0.65rem;color:#64748b;" id="fileStats">📄 0 files</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="chat-container">
+    <div class="chat-messages" id="chatMessages">
+      <div class="empty">🤖 Ask a question after setup completes.</div>
+    </div>
+    <div class="chat-input-area">
+      <div class="chat-input-row">
+        <input type="text" id="questionInput" placeholder="Ask about the codebase..." disabled />
+        <div class="chat-btn-group">
+          <button class="btn btn-primary" id="askFastBtn" disabled>⚡ fast</button>
+          <button class="btn btn-secondary" id="askSimpleBtn" disabled>💬 simple</button>
+        </div>
+      </div>
+      <div class="chat-status" id="chatStatus">⏳ Setup required</div>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
