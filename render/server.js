@@ -9,6 +9,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
+const execPromise = util.promisify(exec);
 
 // ============================================
 // CORS CONFIGURATION
@@ -24,22 +25,13 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: (origin, callback) => {
-        if (!origin) {
-            return callback(null, true);
-        }
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        }
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
         console.warn(`❌ CORS blocked: ${origin}`);
         return callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'api-secret',
-        'x-api-secret',
-        'Authorization'
-    ],
+    allowedHeaders: ['Content-Type', 'api-secret', 'x-api-secret', 'Authorization'],
     exposedHeaders: ['Content-Type', 'api-secret'],
     credentials: true,
     maxAge: 86400
@@ -47,34 +39,34 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-
 app.use(express.json({ limit: '10mb' }));
-// app.use(express.static(path.join(__dirname, '..')));
+// NO STATIC FILE SERVING - API ONLY
 
-// Configuration
+// ============================================
+// CONFIGURATION
+// ============================================
 const API_SECRET = process.env.API_SECRET;
 const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS) || 3;
-const SESSION_TIMEOUT = 3 * 60 * 60 * 1000; // 3 hours
-const EXECUTION_TIMEOUT = 7200; // 2 hours
-const MAX_CODE_SIZE = 3 * 1024 * 1024; // 3MB
-const COMPLETED_EXECUTIONS_TTL = 10 * 60 * 1000; // 10 minutes
-const POLL_INTERVAL = 15000; // 15 seconds
+const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000;
+const EXECUTION_TIMEOUT = parseInt(process.env.EXECUTION_TIMEOUT) || 7200;
+const MAX_CODE_SIZE = parseInt(process.env.MAX_CODE_SIZE) || 3 * 1024 * 1024;
+const COMPLETED_EXECUTIONS_TTL = parseInt(process.env.COMPLETED_EXECUTIONS_TTL) || 10 * 60 * 1000;
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL) || 15000;
+const SESSIONS_BASE_DIR = process.env.SESSIONS_BASE_DIR || path.join(os.tmpdir(), 'colab_sessions');
 
-// Session folders base directory
-const SESSIONS_BASE_DIR = path.join(os.tmpdir(), 'colab_sessions');
-
-// Colab binary configuration
+// Colab binary configuration (matches original behavior)
 let COLAB_BINARY = 'colab';
 let USE_PYTHON_MODULE = false;
 
 // ============================================
-// COLAB BINARY SETUP
+// COLAB BINARY SETUP (EXACTLY LIKE ORIGINAL)
 // ============================================
 
 async function findColabBinaryRecursive() {
     const { execSync } = require('child_process');
     console.log('🔍 Searching for colab binary...');
     
+    // Try 1: which colab
     try {
         const whichPath = execSync('which colab 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
         if (whichPath && whichPath !== '') {
@@ -83,8 +75,9 @@ async function findColabBinaryRecursive() {
         }
     } catch(e) {}
 
+    // Try 2: pip location
     try {
-        const pipPath = execSync('pip3 show google-colab-cli | grep Location | cut -d" " -f2', { encoding: 'utf8', timeout: 5000 }).trim();
+        const pipPath = execSync('pip3 show google-colab-cli 2>/dev/null | grep Location | cut -d" " -f2', { encoding: 'utf8', timeout: 5000 }).trim();
         if (pipPath) {
             console.log(`📦 pip location: ${pipPath}`);
             const possibleBinary = `${pipPath}/colab_cli/__main__.py`;
@@ -95,6 +88,7 @@ async function findColabBinaryRecursive() {
         }
     } catch(e) {}
 
+    // Try 3: Search common paths
     const searchPaths = [
         '/opt/render/.local/bin',
         '/usr/local/bin', 
@@ -117,6 +111,7 @@ async function findColabBinaryRecursive() {
         } catch(e) {}
     }
 
+    // Try 4: Check existing binary
     const existingBinary = path.join(__dirname, 'colab');
     if (require('fs').existsSync(existingBinary)) {
         try {
@@ -146,7 +141,7 @@ async function initColabBinary() {
 }
 
 // ============================================
-// COLAB CLI RUNNER - LET CLI HANDLE TOKEN REFRESH
+// COLAB CLI RUNNER
 // ============================================
 
 const execPromise = util.promisify(exec);
@@ -174,7 +169,7 @@ async function runColabCli(args, timeout = 30000) {
 }
 
 // ============================================
-// AUTH SETUP - FIXED: Converts "token" to "access_token"
+// AUTH SETUP - FIXED: Supports "token" field
 // ============================================
 
 async function setupColabAuth() {
@@ -196,7 +191,7 @@ async function setupColabAuth() {
         // ✅ FIX: Support "token" field by converting to "access_token"
         if (tokenData.token && !tokenData.access_token) {
             tokenData.access_token = tokenData.token;
-            console.log('📝 Converted "token" field to "access_token" for Colab CLI');
+            console.log('📝 Converted "token" field to "access_token"');
         }
         
         console.log('✅ Parsed COLAB_AUTH_TOKEN successfully');
@@ -209,12 +204,23 @@ async function setupColabAuth() {
         );
         console.log('✅ Written token.json');
 
+        // Also write sessions.json to match Colab CLI expectations
         await fs.writeFile(
             path.join(configDir, 'sessions.json'), 
             JSON.stringify({})
         );
         console.log('✅ Written sessions.json');
-        return true;
+        
+        // Verify the token was written correctly
+        const verifyToken = await fs.readFile(path.join(configDir, 'token.json'), 'utf8');
+        const parsed = JSON.parse(verifyToken);
+        if (parsed.access_token) {
+            console.log('✅ Token verification passed');
+            return true;
+        } else {
+            console.warn('⚠️ Token verification failed - no access_token found');
+            return false;
+        }
     } catch (error) {
         console.error('❌ Auth setup failed:', error.message);
         return false;
@@ -241,36 +247,6 @@ async function cleanupSessionFolder(sessionId) {
     }
 }
 
-async function cleanupAllSessionsAndCreateNew() {
-    console.log('🧹 Cleaning up all sessions...');
-    const currentSessions = Array.from(sessions.keys());
-    for (const sessionId of currentSessions) {
-        const session = sessions.get(sessionId);
-        if (session) {
-            try {
-                await runColabCli(['stop', '-s', session.colabSession], 10000);
-            } catch (error) {}
-            await cleanupSessionFolder(sessionId);
-        }
-    }
-    sessions.clear();
-    completedExecutions.clear();
-    executionQueue.clear();
-    
-    for (const [_, process] of executionProcesses) {
-        try {
-            process.kill('SIGTERM');
-        } catch {}
-    }
-    executionProcesses.clear();
-    
-    try {
-        await fs.rm(SESSIONS_BASE_DIR, { recursive: true, force: true });
-        await fs.mkdir(SESSIONS_BASE_DIR, { recursive: true });
-    } catch (error) {}
-    console.log('✅ All sessions cleaned up');
-}
-
 // ============================================
 // SESSION DATA JSON MANAGEMENT
 // ============================================
@@ -285,7 +261,6 @@ async function appendSessionData(sessionId, data) {
             const content = await fs.readFile(dataFile, 'utf8');
             sessionData = JSON.parse(content);
         } catch (e) {
-            // File doesn't exist yet
             sessionData = {
                 sessionId: sessionId,
                 createdAt: new Date().toISOString(),
@@ -355,10 +330,15 @@ const executionProcesses = new Map();
 // Cleanup completed executions periodically
 setInterval(() => {
     const now = Date.now();
+    let cleaned = 0;
     for (const [execId, data] of completedExecutions.entries()) {
         if (now - data.completedAt > COMPLETED_EXECUTIONS_TTL) {
             completedExecutions.delete(execId);
+            cleaned++;
         }
+    }
+    if (cleaned > 0) {
+        console.log(`🧹 Cleaned ${cleaned} completed executions from memory`);
     }
 }, 60 * 1000);
 
@@ -492,7 +472,6 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
             sessions.set(sessionId, updatedSession);
         }
 
-        // Save to session data JSON
         cellData.status = 'completed';
         cellData.completedAt = new Date(completedAt).toISOString();
         cellData.executionTime = executionTime;
@@ -500,6 +479,7 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
         cellData.error = result.stderr || '';
         await appendSessionData(sessionId, cellData);
 
+        console.log(`✅ Execution ${executionId} completed in ${executionTime}ms`);
         return output;
     } catch (error) {
         const completedAt = Date.now();
@@ -521,7 +501,6 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
             sessions.set(sessionId, updatedSession);
         }
 
-        // Save to session data JSON
         cellData.status = 'failed';
         cellData.completedAt = new Date(completedAt).toISOString();
         cellData.executionTime = completedAt - startedAt;
@@ -529,6 +508,7 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId) {
         cellData.error = error.stderr || error.message || String(error);
         await appendSessionData(sessionId, cellData);
 
+        console.error(`❌ Execution ${executionId} failed:`, error.message);
         throw error;
     }
 }
@@ -538,12 +518,14 @@ async function backgroundExecution(sessionId, cellNo, code, executionId) {
     if (executionQueue.has(execKey)) return;
     
     executionQueue.add(execKey);
+    console.log(`📋 Queued execution ${executionId} for session ${sessionId}, cell ${cellNo}`);
     try {
         await executeCodeInColab(sessionId, cellNo, code, executionId);
     } catch (error) {
-        console.error(`Background error:`, error.message);
+        console.error(`💥 Background error for ${executionId}:`, error.message);
     } finally {
         executionQueue.delete(execKey);
+        console.log(`📋 Removed execution ${executionId} from queue`);
     }
 }
 
@@ -553,6 +535,9 @@ async function backgroundExecution(sessionId, cellNo, code, executionId) {
 
 app.get('/health', (req, res) => {
     const memUsage = process.memoryUsage();
+    const now = new Date().toISOString();
+    console.log(`💚 Health check at ${now}, ${sessions.size} active sessions`);
+    
     res.json({
         status: 'healthy',
         activeSessions: sessions.size,
@@ -575,7 +560,7 @@ app.get('/health', (req, res) => {
             external: formatMemory(memUsage.external),
             arrayBuffers: formatMemory(memUsage.arrayBuffers)
         },
-        timestamp: new Date().toISOString(),
+        timestamp: now,
         colabBinary: COLAB_BINARY,
         usePythonModule: USE_PYTHON_MODULE,
         hasAuthToken: !!process.env.COLAB_AUTH_TOKEN
@@ -591,12 +576,13 @@ app.get('/health/simple', (req, res) => {
 });
 
 // ============================================
-// DEBUG ENDPOINTS
+// DEBUG ENDPOINTS (with auth)
 // ============================================
 
 app.get('/debug/sessions', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /debug/sessions`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -652,6 +638,7 @@ app.get('/debug/sessions', async (req, res) => {
 app.get('/debug/sessions/:sessionId', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /debug/sessions/:sessionId`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -692,6 +679,7 @@ app.get('/debug/sessions/:sessionId', async (req, res) => {
 app.post('/start', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /start`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -741,6 +729,7 @@ app.post('/start', async (req, res) => {
         const dataFile = path.join(path.join(SESSIONS_BASE_DIR, sessionId), 'session_data.json');
         await fs.writeFile(dataFile, JSON.stringify(initialData, null, 2));
         
+        console.log(`⏳ Creating Colab session: ${colabSessionName}`);
         await runColabCli(['new', '--gpu', 'T4', '-s', colabSessionName], 60000);
         
         // Save session to memory
@@ -753,6 +742,7 @@ app.post('/start', async (req, res) => {
             folder: path.join(SESSIONS_BASE_DIR, sessionId)
         });
 
+        console.log(`✅ Session ${sessionId} created successfully`);
         res.json({
             success: true,
             sessionId: sessionId,
@@ -763,7 +753,7 @@ app.post('/start', async (req, res) => {
             message: 'Session created successfully'
         });
     } catch (error) {
-        console.error('Session creation failed:', error.message);
+        console.error('❌ Session creation failed:', error.message);
         await cleanupSessionFolder(sessionId);
         
         // The spawn fallback with 10s timeout
@@ -773,6 +763,7 @@ app.post('/start', async (req, res) => {
         const timeout = setTimeout(() => {
             if (!authUrl) {
                 child.kill();
+                console.error('❌ Session creation timeout - no auth URL received');
                 res.status(500).json({ 
                     error: 'Failed to create session', 
                     details: 'Authentication required or token expired'
@@ -787,6 +778,7 @@ app.post('/start', async (req, res) => {
                 authUrl = match[0].split('"')[0].split("'")[0].split('\n')[0];
                 clearTimeout(timeout);
                 child.kill();
+                console.log(`🔐 Auth URL detected: ${authUrl.substring(0, 50)}...`);
                 
                 // Save session to memory even if auth is needed
                 sessions.set(sessionId, {
@@ -814,6 +806,7 @@ app.post('/start', async (req, res) => {
         child.on('error', (err) => {
             clearTimeout(timeout);
             if (!authUrl) {
+                console.error('❌ Spawn error:', err.message);
                 res.status(500).json({ error: 'Failed to create session', details: err.message });
             }
         });
@@ -823,6 +816,7 @@ app.post('/start', async (req, res) => {
 app.post('/keepalive', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /keepalive`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -833,6 +827,7 @@ app.post('/keepalive', async (req, res) => {
 
     const session = sessions.get(sessionId);
     if (!session) {
+        console.warn(`⚠️ Keepalive failed: session ${sessionId} not found`);
         return res.status(404).json({ error: 'Session not found' });
     }
 
@@ -840,8 +835,10 @@ app.post('/keepalive', async (req, res) => {
         await runColabCli(['sessions'], 10000);
         session.lastActivity = Date.now();
         sessions.set(sessionId, session);
+        console.log(`💓 Keepalive success for session ${sessionId.substring(0, 12)}...`);
         res.json({ success: true, message: 'Session kept alive' });
     } catch (error) {
+        console.error(`❌ Keepalive failed for ${sessionId}:`, error.message);
         res.status(500).json({ error: 'Keepalive failed', details: error.message });
     }
 });
@@ -849,6 +846,7 @@ app.post('/keepalive', async (req, res) => {
 app.post('/run', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /run`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -859,10 +857,12 @@ app.post('/run', async (req, res) => {
 
     const session = sessions.get(sessionId);
     if (!session) {
+        console.warn(`⚠️ Run failed: session ${sessionId} not found`);
         return res.status(404).json({ error: 'Session not found' });
     }
 
     if (session.status === 'busy') {
+        console.warn(`⚠️ Session ${sessionId} is busy with execution ${session.currentExecution?.executionId}`);
         return res.status(409).json({ 
             error: 'Session busy',
             currentExecution: session.currentExecution
@@ -871,6 +871,9 @@ app.post('/run', async (req, res) => {
 
     const executionId = crypto.randomBytes(16).toString('hex');
     const validCellNo = parseInt(cellNo, 10);
+
+    console.log(`▶️ Starting execution ${executionId} on session ${sessionId}, cell ${validCellNo}`);
+    console.log(`📝 Code length: ${code.length} chars`);
 
     session.status = 'busy';
     session.lastActivity = Date.now();
@@ -908,6 +911,7 @@ app.post('/run', async (req, res) => {
 app.post('/status', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /status`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
@@ -928,6 +932,7 @@ app.post('/status', async (req, res) => {
 
     const session = sessions.get(sessionId);
     if (!session) {
+        console.warn(`⚠️ Status check: session ${sessionId} not found`);
         return res.status(404).json({ error: 'Session not found' });
     }
 
@@ -950,12 +955,14 @@ app.post('/status', async (req, res) => {
 app.post('/status/ack', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for /status/ack`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
     const { executionId } = req.body;
     if (executionId && completedExecutions.has(executionId)) {
         completedExecutions.delete(executionId);
+        console.log(`✅ Acknowledged execution ${executionId}`);
         res.json({ success: true, message: 'Acknowledged' });
     } else {
         res.json({ success: false, message: 'Execution not found' });
@@ -965,21 +972,26 @@ app.post('/status/ack', async (req, res) => {
 app.delete('/session/:sessionId', async (req, res) => {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        console.warn(`🔒 Auth failed for DELETE /session`);
         return res.status(401).json({ error: 'Invalid API secret' });
     }
 
     const { sessionId } = req.params;
     const session = sessions.get(sessionId);
     if (!session) {
+        console.warn(`⚠️ Delete failed: session ${sessionId} not found`);
         return res.status(404).json({ error: 'Session not found' });
     }
 
+    console.log(`🗑️ Deleting session ${sessionId}`);
     try {
         await runColabCli(['stop', '-s', session.colabSession], 30000);
         await cleanupSessionFolder(sessionId);
         sessions.delete(sessionId);
+        console.log(`✅ Session ${sessionId} terminated`);
         res.json({ success: true, message: 'Session terminated' });
     } catch (error) {
+        console.error(`❌ Delete error for ${sessionId}:`, error.message);
         await cleanupSessionFolder(sessionId);
         sessions.delete(sessionId);
         res.json({ 
@@ -987,6 +999,30 @@ app.delete('/session/:sessionId', async (req, res) => {
             warning: 'Session removed from tracking, but may still exist remotely' 
         });
     }
+});
+
+// ============================================
+// 404 HANDLER
+// ============================================
+
+app.use((req, res) => {
+    console.log(`❓ 404: ${req.method} ${req.path}`);
+    res.status(404).json({
+        error: 'Not Found',
+        message: 'This is an API-only server. Available endpoints:',
+        endpoints: {
+            health: 'GET /health',
+            simpleHealth: 'GET /health/simple',
+            start: 'POST /start',
+            keepalive: 'POST /keepalive',
+            run: 'POST /run',
+            status: 'POST /status',
+            acknowledge: 'POST /status/ack',
+            deleteSession: 'DELETE /session/:sessionId',
+            debug: 'GET /debug/sessions'
+        },
+        timestamp: new Date().toISOString()
+    });
 });
 
 // ============================================
@@ -998,11 +1034,14 @@ async function cleanupIdleSessions() {
     let cleaned = 0;
     for (const [sessionId, session] of sessions.entries()) {
         if (now - session.lastActivity > SESSION_TIMEOUT && session.status !== 'busy') {
+            console.log(`🧹 Cleaning idle session ${sessionId}`);
             try {
                 await runColabCli(['stop', '-s', session.colabSession], 10000);
                 await cleanupSessionFolder(sessionId);
                 cleaned++;
-            } catch (error) {}
+            } catch (error) {
+                console.error(`❌ Failed to clean session ${sessionId}:`, error.message);
+            }
             sessions.delete(sessionId);
         }
     }
@@ -1013,36 +1052,80 @@ async function cleanupIdleSessions() {
 }
 
 // ============================================
+// GRACEFUL SHUTDOWN
+// ============================================
+
+let shutdownInProgress = false;
+
+async function gracefulShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    
+    console.log(`🛑 Received ${signal}, starting graceful shutdown...`);
+    console.log(`📊 Active sessions: ${sessions.size}, active executions: ${executionProcesses.size}`);
+    
+    for (const sessionId of sessions.keys()) {
+        try {
+            const session = sessions.get(sessionId);
+            if (session) {
+                console.log(`🧹 Cleaning up session ${sessionId}`);
+                await runColabCli(['stop', '-s', session.colabSession], 10000);
+                await cleanupSessionFolder(sessionId);
+                sessions.delete(sessionId);
+            }
+        } catch (error) {
+            console.error(`❌ Failed to clean up session ${sessionId}:`, error.message);
+        }
+    }
+    
+    console.log('✅ Graceful shutdown complete');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+process.on('uncaughtException', (error) => {
+    console.error('💥 Uncaught exception:', error.message);
+    console.error(error.stack);
+    gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 Unhandled rejection:', reason);
+});
+
+// ============================================
 // INITIALIZATION
 // ============================================
 
 async function init() {
-    console.log('🚀 Initializing Colab Orchestrator...');
+    console.log('🚀 Initializing Colab Orchestrator v2.1...');
     
     await initColabBinary();
     await fs.mkdir(SESSIONS_BASE_DIR, { recursive: true });
     await setupColabAuth();
     
     console.log('✅ Token auto-refresh handled by Colab CLI');
+    console.log(`✅ Colab binary: ${COLAB_BINARY} ${USE_PYTHON_MODULE ? '(-m colab_cli)' : ''}`);
     
+    // Start cleanup after 1 hour
     setTimeout(cleanupIdleSessions, 60 * 60 * 1000);
 
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
-        console.log(`\n🚀 Colab Orchestrator running on port ${PORT}`);
-        console.log(`📁 Static files from: ${path.join(__dirname, '..')}`);
+        console.log(`\n🚀 Colab Orchestrator v2.1 running on port ${PORT}`);
         console.log(`📁 Sessions folder: ${SESSIONS_BASE_DIR}`);
         console.log(`🔧 Colab binary: ${COLAB_BINARY} ${USE_PYTHON_MODULE ? '(-m colab_cli)' : ''}`);
         console.log(`📊 Max sessions: ${MAX_SESSIONS}`);
         console.log(`🔐 API Secret: ${API_SECRET !== 'kushalkumarjthegreat' ? '✅ Custom' : '⚠️ Default'}`);
         console.log(`🔑 Colab Auth: ${process.env.COLAB_AUTH_TOKEN ? '✅ Token configured' : '⚠️ No token'}`);
-        console.log(`🔄 Token auto-refresh: Handled by Colab CLI`);
         console.log(`⏰ Session timeout: ${SESSION_TIMEOUT / 1000 / 60 / 60} hours`);
         console.log(`⏱️  Execution timeout: ${EXECUTION_TIMEOUT / 60} minutes`);
-        console.log(`🗑️  Sessions: Max ${MAX_SESSIONS}, oldest killed on new request`);
-        console.log(`🔒 CORS: Allowed origins: ${allowedOrigins.join(', ')}\n`);
-        console.log(`🌐 Open: http://localhost:${PORT}`);
-        console.log(`🔑 API Secret: ${API_SECRET}\n`);
+        console.log(`🔒 CORS: ${allowedOrigins.length} allowed origins`);
+        console.log(`📦 API-Only: No static files served`);
+        console.log(`\n🌐 API server running on http://localhost:${PORT}`);
+        console.log(`📊 Health check: http://localhost:${PORT}/health\n`);
     });
 }
 
