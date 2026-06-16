@@ -14,7 +14,7 @@ const app = express();
 // CORS CONFIGURATION
 // ============================================
 const allowedOrigins = [
-    'https://kushalkumarj2006.github.io',
+    'https://thereaper987.github.io',
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:5500',
