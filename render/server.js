@@ -1,8 +1,3 @@
-// ============================================
-// FIXED SERVER.JS - Compatible with token format
-// Uses "token" field instead of "access_token"
-// ============================================
-
 const express = require('express');
 const { spawn, exec } = require('child_process');
 const util = require('util');
@@ -21,7 +16,7 @@ const execPromise = util.promisify(exec);
 // ============================================
 
 const CONFIG = {
-    API_SECRET: process.env.API_SECRET,
+    API_SECRET: process.env.API_SECRET || 'kushalkumarjthegreat',
     MAX_SESSIONS: parseInt(process.env.MAX_SESSIONS) || 3,
     SESSION_TIMEOUT: parseInt(process.env.SESSION_TIMEOUT) || 3 * 60 * 60 * 1000,
     EXECUTION_TIMEOUT: parseInt(process.env.EXECUTION_TIMEOUT) || 7200,
@@ -32,31 +27,171 @@ const CONFIG = {
     COLAB_AUTH_TOKEN: process.env.COLAB_AUTH_TOKEN,
     PORT: process.env.PORT || 3000,
     NODE_ENV: process.env.NODE_ENV || 'development',
-    LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+    LOG_LEVEL: process.env.LOG_LEVEL || 'debug'  // Changed to debug for full logs
 };
 
 // ============================================
-// SIMPLE LOGGER
+// ULTRA DETAILED LOGGER
 // ============================================
 
 class Logger {
     constructor(level = 'info') {
-        this.levels = { error: 0, warn: 1, info: 2, debug: 3 };
+        this.levels = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
         this.level = this.levels[level] ?? 2;
+        this.colors = {
+            error: '\x1b[31m',
+            warn: '\x1b[33m',
+            info: '\x1b[36m',
+            debug: '\x1b[35m',
+            trace: '\x1b[90m',
+            reset: '\x1b[0m',
+            bright: '\x1b[1m',
+            session: '\x1b[32m',   // Green for session IDs
+            exec: '\x1b[33m',      // Yellow for execution IDs
+            code: '\x1b[36m'       // Cyan for code
+        };
     }
 
-    log(level, message, meta = {}) {
-        if (this.level >= this.levels[level]) {
-            const timestamp = new Date().toISOString();
-            const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-            console.log(`${timestamp} [${level.toUpperCase()}] ${message}${metaStr}`);
+    _format(level, message, meta = {}) {
+        const timestamp = new Date().toISOString();
+        const color = this.colors[level] || '';
+        const reset = this.colors.reset;
+        const bright = this.colors.bright;
+        
+        // Format meta with color coding
+        let metaStr = '';
+        if (Object.keys(meta).length > 0) {
+            const parts = [];
+            if (meta.sessionId) {
+                parts.push(`${bright}📋 SESSION:${reset}${this.colors.session} ${meta.sessionId.substring(0, 16)}...${reset}`);
+                delete meta.sessionId;
+            }
+            if (meta.executionId) {
+                parts.push(`${bright}⚡ EXEC:${reset}${this.colors.exec} ${meta.executionId}${reset}`);
+                delete meta.executionId;
+            }
+            if (meta.cellNo !== undefined) {
+                parts.push(`${bright}📄 CELL:${reset} ${meta.cellNo}`);
+                delete meta.cellNo;
+            }
+            if (meta.code) {
+                const codeSnippet = meta.code.length > 100 ? meta.code.substring(0, 100) + '...' : meta.code;
+                parts.push(`${bright}💻 CODE:${reset}${this.colors.code}\n${codeSnippet}${reset}`);
+                delete meta.code;
+            }
+            if (meta.status) {
+                parts.push(`${bright}📊 STATUS:${reset} ${meta.status}`);
+                delete meta.status;
+            }
+            if (meta.duration) {
+                parts.push(`${bright}⏱️  DURATION:${reset} ${meta.duration}ms`);
+                delete meta.duration;
+            }
+            if (meta.output) {
+                const outputSnippet = meta.output.length > 200 ? meta.output.substring(0, 200) + '...' : meta.output;
+                parts.push(`${bright}📤 OUTPUT:${reset}\n${outputSnippet}`);
+                delete meta.output;
+            }
+            if (meta.error) {
+                const errorSnippet = meta.error.length > 200 ? meta.error.substring(0, 200) + '...' : meta.error;
+                parts.push(`${bright}❌ ERROR:${reset}\n${errorSnippet}`);
+                delete meta.error;
+            }
+            // Remaining meta
+            for (const [key, value] of Object.entries(meta)) {
+                if (value !== undefined && value !== null) {
+                    parts.push(`${bright}${key}:${reset} ${JSON.stringify(value)}`);
+                }
+            }
+            metaStr = parts.length > 0 ? `\n  ${parts.join('\n  ')}` : '';
         }
+        
+        return `${timestamp} ${color}[${level.toUpperCase()}]${reset} ${message}${metaStr}`;
     }
 
-    error(message, meta) { this.log('error', message, meta); }
-    warn(message, meta) { this.log('warn', message, meta); }
-    info(message, meta) { this.log('info', message, meta); }
-    debug(message, meta) { this.log('debug', message, meta); }
+    error(message, meta) {
+        if (this.level >= this.levels.error) console.error(this._format('error', message, meta));
+    }
+    warn(message, meta) {
+        if (this.level >= this.levels.warn) console.warn(this._format('warn', message, meta));
+    }
+    info(message, meta) {
+        if (this.level >= this.levels.info) console.log(this._format('info', message, meta));
+    }
+    debug(message, meta) {
+        if (this.level >= this.levels.debug) console.log(this._format('debug', message, meta));
+    }
+    trace(message, meta) {
+        if (this.level >= this.levels.trace) console.log(this._format('trace', message, meta));
+    }
+    
+    // Special methods for common operations
+    sessionCreated(sessionId, colabSession, activeSessions) {
+        this.info(`🆕 SESSION CREATED`, { 
+            sessionId, 
+            colabSession, 
+            activeSessions,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    sessionDeleted(sessionId, reason = 'manual') {
+        this.info(`🗑️ SESSION DELETED`, { sessionId, reason });
+    }
+    
+    sessionBusy(sessionId, executionId) {
+        this.warn(`⏳ SESSION BUSY`, { sessionId, executionId });
+    }
+    
+    executionStarted(sessionId, executionId, cellNo, code) {
+        this.info(`▶️ EXECUTION STARTED`, {
+            sessionId,
+            executionId,
+            cellNo,
+            code: code.substring(0, 500),
+            codeLength: code.length,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    executionCompleted(sessionId, executionId, cellNo, duration, status, output, error) {
+        this.info(`✅ EXECUTION COMPLETED`, {
+            sessionId,
+            executionId,
+            cellNo,
+            duration,
+            status,
+            output: output ? output.substring(0, 500) : undefined,
+            error: error ? error.substring(0, 500) : undefined,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    executionFailed(sessionId, executionId, cellNo, duration, error) {
+        this.error(`❌ EXECUTION FAILED`, {
+            sessionId,
+            executionId,
+            cellNo,
+            duration,
+            error: error.substring(0, 500),
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    colabCommand(command, args) {
+        this.debug(`🔧 COLAB COMMAND`, {
+            command: `${command} ${args.join(' ')}`,
+            args
+        });
+    }
+    
+    binaryFound(path) {
+        this.info(`🔍 COLAB BINARY FOUND`, { path });
+    }
+    
+    authStatus(status, details) {
+        this.info(`🔐 AUTH STATUS: ${status}`, details);
+    }
 }
 
 const logger = new Logger(CONFIG.LOG_LEVEL);
@@ -66,7 +201,7 @@ const logger = new Logger(CONFIG.LOG_LEVEL);
 // ============================================
 
 const allowedOrigins = [
-    'https://thereaper987.github.io',
+    'https://kushalkumarj2006.github.io',
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:5500',
@@ -78,7 +213,7 @@ const corsOptions = {
     origin: (origin, callback) => {
         if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin)) return callback(null, true);
-        logger.warn(`CORS blocked: ${origin}`);
+        logger.warn(`🚫 CORS BLOCKED`, { origin });
         return callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -124,8 +259,13 @@ function detectExitCode(output) {
     return 0;
 }
 
+function getCodeSnippet(code, maxLength = 200) {
+    if (code.length <= maxLength) return code;
+    return code.substring(0, maxLength) + '...';
+}
+
 // ============================================
-// COLAB BINARY MANAGER (Fixed - Like Original)
+// COLAB BINARY MANAGER
 // ============================================
 
 class ColabBinaryManager {
@@ -136,15 +276,17 @@ class ColabBinaryManager {
     }
 
     async findBinary() {
-        logger.info('Searching for colab binary...');
+        logger.info('🔍 SEARCHING FOR COLAB BINARY...');
         
         try {
             const { stdout } = await execPromise('which colab 2>/dev/null || echo ""', { timeout: 5000 });
             if (stdout.trim()) {
-                logger.info(`Found colab via which: ${stdout.trim()}`);
+                logger.binaryFound(stdout.trim());
                 return stdout.trim();
             }
-        } catch (e) {}
+        } catch (e) {
+            logger.debug('which colab failed', { error: e.message });
+        }
 
         try {
             const { stdout } = await execPromise(
@@ -155,11 +297,13 @@ class ColabBinaryManager {
                 const binaryPath = path.join(stdout.trim(), 'colab_cli/__main__.py');
                 try {
                     await fs.access(binaryPath);
-                    logger.info(`Found colab via pip: ${binaryPath}`);
+                    logger.binaryFound(`python3 -m colab_cli (pip: ${stdout.trim()})`);
                     return 'python3';
                 } catch (e) {}
             }
-        } catch (e) {}
+        } catch (e) {
+            logger.debug('pip show failed', { error: e.message });
+        }
 
         const searchPaths = [
             '/opt/render/.local/bin',
@@ -177,22 +321,26 @@ class ColabBinaryManager {
                     { timeout: 10000 }
                 );
                 if (stdout.trim()) {
-                    logger.info(`Found colab via search: ${stdout.trim()}`);
+                    logger.binaryFound(stdout.trim());
                     try {
                         await execPromise(`chmod +x "${stdout.trim()}"`, { stdio: 'ignore' });
                     } catch (e) {}
                     return stdout.trim();
                 }
-            } catch (e) {}
+            } catch (e) {
+                logger.debug(`Search in ${searchPath} failed`, { error: e.message });
+            }
         }
 
         try {
             await execPromise('python3 -c "import colab_cli" 2>/dev/null', { timeout: 5000 });
-            logger.info('Found colab as Python module');
+            logger.binaryFound('python3 -m colab_cli (module)');
             return 'python3';
-        } catch (e) {}
+        } catch (e) {
+            logger.debug('Python module check failed', { error: e.message });
+        }
 
-        logger.warn('Colab binary not found, defaulting to python3 module');
+        logger.warn('⚠️ COLAB BINARY NOT FOUND - using python3 module fallback');
         return 'python3';
     }
 
@@ -203,11 +351,11 @@ class ColabBinaryManager {
         if (binary === 'python3') {
             this.usePythonModule = true;
             this.binary = 'python3';
-            logger.info(`Using Python module: ${this.binary} -m colab_cli`);
+            logger.info(`🔧 USING PYTHON MODULE: ${this.binary} -m colab_cli`);
         } else {
             this.binary = binary;
             this.usePythonModule = false;
-            logger.info(`Using colab binary: ${this.binary}`);
+            logger.info(`🔧 USING COLAB BINARY: ${this.binary}`);
         }
         this.isInitialized = true;
     }
@@ -225,7 +373,7 @@ class ColabBinaryManager {
                 command = `${this.binary} ${escapedArgs}`;
             }
             
-            logger.debug(`Running: ${command.substring(0, 200)}`);
+            logger.colabCommand(this.binary, args);
             
             exec(command, { 
                 timeout, 
@@ -234,8 +382,17 @@ class ColabBinaryManager {
                 env: { ...process.env, PYTHONUNBUFFERED: '1' }
             }, (error, stdout, stderr) => {
                 if (error && error.code !== 0) {
+                    logger.error(`COLAB COMMAND FAILED`, { 
+                        command: command.substring(0, 200),
+                        code: error.code,
+                        stderr: stderr ? stderr.substring(0, 500) : 'none'
+                    });
                     reject({ error, stdout, stderr, code: error.code });
                 } else {
+                    logger.debug(`COLAB COMMAND SUCCESS`, { 
+                        stdout: stdout ? stdout.substring(0, 200) : 'empty',
+                        stderr: stderr ? stderr.substring(0, 200) : 'empty'
+                    });
                     resolve({ stdout, stderr });
                 }
             });
@@ -254,6 +411,12 @@ class ColabBinaryManager {
             cmdArgs = args;
         }
 
+        logger.colabCommand(command, cmdArgs);
+        logger.info(`📤 STREAMING EXECUTION STARTED`, { 
+            command: command,
+            args: cmdArgs.join(' ').substring(0, 200)
+        });
+
         return spawn(command, cmdArgs, {
             shell: true,
             timeout: timeout * 1000,
@@ -264,10 +427,10 @@ class ColabBinaryManager {
     async testConnection() {
         try {
             const { stdout } = await this.run(['--version'], 10000);
-            logger.info('Colab CLI connection test successful', { version: stdout.trim() });
+            logger.info(`✅ COLAB CLI CONNECTION TEST PASSED`, { version: stdout.trim() });
             return true;
         } catch (error) {
-            logger.error('Colab CLI connection test failed', { error: error.message });
+            logger.error(`❌ COLAB CLI CONNECTION TEST FAILED`, { error: error.message });
             return false;
         }
     }
@@ -279,7 +442,7 @@ class ColabBinaryManager {
 
 async function setupColabAuth() {
     if (!CONFIG.COLAB_AUTH_TOKEN) {
-        logger.warn('COLAB_AUTH_TOKEN not found in environment');
+        logger.warn('⚠️ COLAB_AUTH_TOKEN NOT FOUND');
         return false;
     }
 
@@ -288,18 +451,22 @@ async function setupColabAuth() {
         if ((rawToken.startsWith("'") && rawToken.endsWith("'")) || 
             (rawToken.startsWith('"') && rawToken.endsWith('"'))) {
             rawToken = rawToken.slice(1, -1);
+            logger.debug('📝 Stripped quotes from token');
         }
 
         const tokenData = JSON.parse(rawToken);
         
-        // FIX: Check for "token" field (your format) OR "access_token"
         const accessToken = tokenData.token || tokenData.access_token;
         if (!accessToken) {
-            logger.error('Auth setup failed: missing "token" or "access_token" field');
+            logger.error('❌ AUTH FAILED: missing "token" or "access_token" field');
             return false;
         }
 
-        logger.info('Parsed COLAB_AUTH_TOKEN successfully');
+        logger.authStatus('✅ Token parsed successfully', {
+            hasRefreshToken: !!tokenData.refresh_token,
+            hasClientId: !!tokenData.client_id,
+            expiry: tokenData.expiry || 'unknown'
+        });
         
         // Convert to the format expected by colab-cli
         const cliTokenData = {
@@ -316,22 +483,19 @@ async function setupColabAuth() {
 
         const configDir = path.join(os.homedir(), '.config/colab-cli');
         await fs.mkdir(configDir, { recursive: true });
+        logger.debug(`📁 Config directory: ${configDir}`);
         
-        await fs.writeFile(
-            path.join(configDir, 'token.json'), 
-            JSON.stringify(cliTokenData, null, 2)
-        );
-        logger.info('Written token.json with access_token');
+        const tokenPath = path.join(configDir, 'token.json');
+        await fs.writeFile(tokenPath, JSON.stringify(cliTokenData, null, 2));
+        logger.authStatus('✅ Token file written', { path: tokenPath });
 
-        await fs.writeFile(
-            path.join(configDir, 'sessions.json'), 
-            JSON.stringify({})
-        );
-        logger.info('Written sessions.json');
+        const sessionsPath = path.join(configDir, 'sessions.json');
+        await fs.writeFile(sessionsPath, JSON.stringify({}));
+        logger.debug(`📁 Sessions file written: ${sessionsPath}`);
         
         return true;
     } catch (error) {
-        logger.error('Auth setup failed:', { error: error.message });
+        logger.error('❌ AUTH SETUP FAILED', { error: error.message });
         return false;
     }
 }
@@ -354,6 +518,7 @@ class SessionManager {
     async createSessionFolder(sessionId) {
         const sessionFolder = path.join(this.baseDir, sessionId);
         await fs.mkdir(sessionFolder, { recursive: true });
+        logger.debug(`📁 Session folder created: ${sessionFolder}`);
         return sessionFolder;
     }
 
@@ -361,10 +526,10 @@ class SessionManager {
         const sessionFolder = path.join(this.baseDir, sessionId);
         try {
             await fs.rm(sessionFolder, { recursive: true, force: true });
-            logger.info(`Cleaned up folder for session ${sessionId}`);
+            logger.debug(`🗑️ Session folder cleaned: ${sessionFolder}`);
             this.sessionDataCache.delete(sessionId);
         } catch (error) {
-            logger.error(`Failed to cleanup folder for ${sessionId}:`, { error: error.message });
+            logger.error(`❌ Failed to cleanup folder for ${sessionId}`, { error: error.message });
         }
     }
 
@@ -395,9 +560,10 @@ class SessionManager {
             
             await fs.writeFile(dataFile, JSON.stringify(sessionData, null, 2));
             this.sessionDataCache.set(sessionId, { data: sessionData, timestamp: Date.now() });
+            logger.trace(`📝 Session data appended`, { sessionId, dataFile, totalCells: sessionData.totalCells });
             return sessionData;
         } catch (error) {
-            logger.error(`Failed to append session data for ${sessionId}:`, { error: error.message });
+            logger.error(`❌ Failed to append session data`, { sessionId, error: error.message });
             return null;
         }
     }
@@ -405,6 +571,7 @@ class SessionManager {
     async getSessionData(sessionId) {
         const cached = this.sessionDataCache.get(sessionId);
         if (cached && (Date.now() - cached.timestamp) < this.cacheTTL) {
+            logger.trace(`📦 Session data from cache`, { sessionId });
             return cached.data;
         }
 
@@ -415,8 +582,10 @@ class SessionManager {
             const content = await fs.readFile(dataFile, 'utf8');
             const data = JSON.parse(content);
             this.sessionDataCache.set(sessionId, { data, timestamp: Date.now() });
+            logger.trace(`📂 Session data from disk`, { sessionId });
             return data;
         } catch {
+            logger.trace(`📭 No session data found`, { sessionId });
             return null;
         }
     }
@@ -424,10 +593,15 @@ class SessionManager {
     startCleanupInterval() {
         setInterval(() => {
             const now = Date.now();
+            let cleaned = 0;
             for (const [execId, data] of this.completedExecutions.entries()) {
                 if (now - data.completedAt > CONFIG.COMPLETED_EXECUTIONS_TTL) {
                     this.completedExecutions.delete(execId);
+                    cleaned++;
                 }
+            }
+            if (cleaned > 0) {
+                logger.debug(`🧹 Cleaned ${cleaned} completed executions from memory`);
             }
         }, 60000);
     }
@@ -437,20 +611,26 @@ class SessionManager {
         let cleaned = 0;
         
         for (const [sessionId, session] of this.sessions.entries()) {
-            if (now - session.lastActivity > CONFIG.SESSION_TIMEOUT && session.status !== 'busy') {
+            const idleTime = now - session.lastActivity;
+            if (idleTime > CONFIG.SESSION_TIMEOUT && session.status !== 'busy') {
+                logger.info(`🧹 CLEANING IDLE SESSION`, {
+                    sessionId: sessionId.substring(0, 16),
+                    idleTime: Math.floor(idleTime / 60000) + 'm',
+                    colabSession: session.colabSession
+                });
                 try {
                     await colab.run(['stop', '-s', session.colabSession], 10000);
                     await this.cleanupSessionFolder(sessionId);
                     cleaned++;
                 } catch (error) {
-                    logger.warn(`Failed to clean up session ${sessionId}: ${error.message}`);
+                    logger.warn(`⚠️ Failed to clean up session`, { sessionId: sessionId.substring(0, 16), error: error.message });
                 }
                 this.sessions.delete(sessionId);
             }
         }
         
         if (cleaned > 0) {
-            logger.info(`Cleaned up ${cleaned} idle sessions`);
+            logger.info(`🧹 Cleaned ${cleaned} idle sessions`);
         }
         
         setTimeout(() => this.cleanupIdleSessions(colab), 60 * 60 * 1000);
@@ -461,23 +641,38 @@ class SessionManager {
         let killed = 0;
         
         for (const [execId, execution] of this.activeExecutions.entries()) {
-            if (now - execution.startedAt > CONFIG.EXECUTION_TIMEOUT * 1000 * 1.2) {
+            const elapsed = now - execution.startedAt;
+            if (elapsed > CONFIG.EXECUTION_TIMEOUT * 1000 * 1.2) {
+                logger.warn(`⚠️ KILLING HANGING PROCESS`, {
+                    executionId: execId,
+                    sessionId: execution.sessionId.substring(0, 16),
+                    elapsed: Math.floor(elapsed / 1000) + 's',
+                    cellNo: execution.cellNo
+                });
                 try {
                     if (execution.process) {
                         execution.process.kill('SIGTERM');
                         killed++;
-                        logger.warn(`Killed hanging process: ${execId}`);
                     }
                 } catch (error) {
-                    logger.warn(`Failed to kill hanging process ${execId}: ${error.message}`);
+                    logger.error(`❌ Failed to kill hanging process`, { executionId: execId, error: error.message });
                 }
                 this.activeExecutions.delete(execId);
             }
         }
         
         if (killed > 0) {
-            logger.info(`Killed ${killed} hanging processes`);
+            logger.info(`🔫 Killed ${killed} hanging processes`);
         }
+    }
+
+    getStats() {
+        return {
+            totalSessions: this.sessions.size,
+            activeExecutions: this.activeExecutions.size,
+            completedExecutions: this.completedExecutions.size,
+            queuedExecutions: this.executionQueue.size
+        };
     }
 }
 
@@ -487,9 +682,26 @@ class SessionManager {
 
 async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, sessionManager) {
     const session = sessionManager.sessions.get(sessionId);
-    if (!session) throw new Error('Session not found');
+    if (!session) {
+        logger.error(`❌ SESSION NOT FOUND`, { sessionId: sessionId.substring(0, 16) });
+        throw new Error('Session not found');
+    }
+
+    // Log code details
+    logger.debug(`📝 CODE DETAILS`, {
+        sessionId: sessionId.substring(0, 16),
+        cellNo,
+        codeLength: code.length,
+        codeSize: Buffer.byteLength(code, 'utf8'),
+        codePreview: getCodeSnippet(code, 150)
+    });
 
     if (Buffer.byteLength(code, 'utf8') > CONFIG.MAX_CODE_SIZE) {
+        logger.error(`❌ CODE TOO LARGE`, {
+            sessionId: sessionId.substring(0, 16),
+            size: Buffer.byteLength(code, 'utf8'),
+            maxSize: CONFIG.MAX_CODE_SIZE
+        });
         throw new Error(`Code exceeds ${CONFIG.MAX_CODE_SIZE} bytes`);
     }
 
@@ -502,7 +714,7 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         type: 'execution',
         cellNo: cellNo,
         startedAt: new Date(startedAt).toISOString(),
-        code: code.substring(0, 500),
+        code: getCodeSnippet(code, 500),
         status: 'running'
     };
 
@@ -510,6 +722,7 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         const sessionFolder = path.join(CONFIG.SESSIONS_BASE_DIR, sessionId);
         const codeFile = path.join(sessionFolder, `code_${cellNo}.py`);
         await fs.writeFile(codeFile, code, 'utf8');
+        logger.debug(`📄 Code file written`, { sessionId: sessionId.substring(0, 16), codeFile });
 
         const process = await colab.runWithStreaming([
             'exec', 
@@ -527,9 +740,13 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
             cellNo
         });
 
+        let stdoutChunks = 0;
+        let stderrChunks = 0;
+
         process.stdout.on('data', (data) => {
             const chunk = data.toString();
             stdout += chunk;
+            stdoutChunks++;
             const exec = sessionManager.activeExecutions.get(executionId);
             if (exec) {
                 exec.stdout = stdout;
@@ -539,18 +756,48 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
                     sessionManager.sessions.set(sessionId, sess);
                 }
             }
+            // Log every 10 chunks to avoid spam
+            if (stdoutChunks % 10 === 0) {
+                logger.trace(`📤 STDOUT chunk ${stdoutChunks}`, {
+                    executionId,
+                    sessionId: sessionId.substring(0, 16),
+                    chunkSize: chunk.length,
+                    totalSize: stdout.length
+                });
+            }
         });
 
         process.stderr.on('data', (data) => {
             const chunk = data.toString();
             stderr += chunk;
+            stderrChunks++;
             const exec = sessionManager.activeExecutions.get(executionId);
             if (exec) exec.stderr = stderr;
+            if (stderrChunks % 5 === 0) {
+                logger.trace(`📤 STDERR chunk ${stderrChunks}`, {
+                    executionId,
+                    sessionId: sessionId.substring(0, 16),
+                    chunkSize: chunk.length,
+                    totalSize: stderr.length
+                });
+            }
         });
 
         const result = await new Promise((resolve, reject) => {
+            let resolved = false;
+            
             process.on('close', (code) => {
+                if (resolved) return;
+                resolved = true;
                 exitCode = detectExitCode(stdout + stderr);
+                logger.debug(`🔚 PROCESS CLOSED`, {
+                    executionId,
+                    sessionId: sessionId.substring(0, 16),
+                    code,
+                    exitCode,
+                    stdoutSize: stdout.length,
+                    stderrSize: stderr.length
+                });
                 if (code !== 0 && exitCode === 0) {
                     resolve({ stdout, stderr, exitCode: 0 });
                 } else if (code !== 0) {
@@ -561,12 +808,25 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
             });
             
             process.on('error', (err) => {
+                if (resolved) return;
+                resolved = true;
+                logger.error(`❌ PROCESS ERROR`, {
+                    executionId,
+                    sessionId: sessionId.substring(0, 16),
+                    error: err.message
+                });
                 reject({ error: err, stdout, stderr });
             });
 
             setTimeout(() => {
-                if (!process.killed) {
+                if (!resolved && !process.killed) {
                     process.kill('SIGTERM');
+                    resolved = true;
+                    logger.warn(`⏰ EXECUTION TIMEOUT - killing process`, {
+                        executionId,
+                        sessionId: sessionId.substring(0, 16),
+                        timeout: CONFIG.EXECUTION_TIMEOUT
+                    });
                     reject({ error: new Error('Execution timeout'), stdout, stderr, exitCode: -2 });
                 }
             }, CONFIG.EXECUTION_TIMEOUT * 1000 + 5000);
@@ -607,12 +867,29 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         cellData.exitCode = result.exitCode;
         await sessionManager.appendSessionData(sessionId, cellData);
 
-        logger.info(`Execution completed: ${executionId}`, { sessionId, cellNo, status, executionTime });
+        logger.executionCompleted(
+            sessionId, 
+            executionId, 
+            cellNo, 
+            executionTime, 
+            status,
+            result.stdout,
+            result.stderr
+        );
+
         return output;
 
     } catch (error) {
         const completedAt = Date.now();
         const executionTime = completedAt - startedAt;
+        
+        logger.executionFailed(
+            sessionId,
+            executionId,
+            cellNo,
+            executionTime,
+            error.message || String(error)
+        );
         
         const failureResult = {
             status: 'failed',
@@ -642,22 +919,31 @@ async function executeCodeInColab(sessionId, cellNo, code, executionId, colab, s
         cellData.error = (error.stderr || error.message || String(error)).substring(0, 1000);
         await sessionManager.appendSessionData(sessionId, cellData);
 
-        logger.error(`Execution failed: ${executionId}`, { sessionId, cellNo, error: error.message });
         throw error;
     }
 }
 
 async function backgroundExecution(sessionId, cellNo, code, executionId, colab, sessionManager) {
     const execKey = `${sessionId}_${cellNo}`;
-    if (sessionManager.executionQueue.has(execKey)) return;
+    if (sessionManager.executionQueue.has(execKey)) {
+        logger.warn(`⏳ EXECUTION ALREADY QUEUED`, { sessionId: sessionId.substring(0, 16), cellNo });
+        return;
+    }
     
+    logger.debug(`📋 Adding to execution queue`, { sessionId: sessionId.substring(0, 16), cellNo, executionId });
     sessionManager.executionQueue.add(execKey);
     try {
         await executeCodeInColab(sessionId, cellNo, code, executionId, colab, sessionManager);
     } catch (error) {
-        logger.error(`Background execution error:`, { sessionId, cellNo, error: error.message });
+        logger.error(`💥 BACKGROUND EXECUTION ERROR`, {
+            sessionId: sessionId.substring(0, 16),
+            cellNo,
+            executionId,
+            error: error.message
+        });
     } finally {
         sessionManager.executionQueue.delete(execKey);
+        logger.debug(`📋 Removed from execution queue`, { sessionId: sessionId.substring(0, 16), cellNo });
     }
 }
 
@@ -671,22 +957,59 @@ app.use(express.json({ limit: '10mb' }));
 
 // NO STATIC FILE SERVING - API ONLY
 
+// Request logging middleware
 app.use((req, res, next) => {
-    logger.debug(`${req.method} ${req.path}`);
+    const startTime = Date.now();
+    const traceId = crypto.randomBytes(8).toString('hex');
+    req.traceId = traceId;
+    
+    logger.debug(`📨 REQUEST RECEIVED`, {
+        traceId,
+        method: req.method,
+        path: req.path,
+        ip: req.ip || req.get('x-forwarded-for') || 'unknown',
+        userAgent: req.get('user-agent') || 'unknown'
+    });
+    
+    // Capture response
+    const originalSend = res.send;
+    res.send = function(data) {
+        const duration = Date.now() - startTime;
+        logger.debug(`📤 RESPONSE SENT`, {
+            traceId,
+            status: res.statusCode,
+            duration: duration + 'ms'
+        });
+        originalSend.call(this, data);
+    };
+    
     next();
 });
 
 function authMiddleware(req, res, next) {
     const apiSecret = extractApiSecret(req);
     if (!validateApiSecret(apiSecret)) {
+        logger.warn(`🔒 AUTH FAILED`, {
+            traceId: req.traceId,
+            path: req.path,
+            provided: apiSecret ? '****' : 'none'
+        });
         return res.status(401).json({ error: 'Invalid API secret' });
     }
+    logger.trace(`🔓 AUTH SUCCESS`, { traceId: req.traceId, path: req.path });
     next();
 }
 
 app.use((err, req, res, next) => {
     const status = err.status || 500;
-    logger.error(`Request error: ${err.message}`, { path: req.path, status });
+    logger.error(`💥 REQUEST ERROR`, {
+        traceId: req.traceId,
+        path: req.path,
+        method: req.method,
+        status,
+        error: err.message,
+        stack: err.stack
+    });
     res.status(status).json({
         error: err.message || 'Internal server error',
         timestamp: new Date().toISOString()
@@ -699,10 +1022,20 @@ app.use((err, req, res, next) => {
 
 app.get('/health', (req, res) => {
     const memUsage = process.memoryUsage();
+    const stats = sessionManager.getStats();
+    const now = new Date().toISOString();
+    
+    logger.info(`💚 HEALTH CHECK`, {
+        traceId: req.traceId,
+        sessions: stats.totalSessions,
+        activeExecutions: stats.activeExecutions,
+        queued: stats.queuedExecutions
+    });
+    
     res.json({
         status: 'healthy',
         version: '2.0.0',
-        activeSessions: sessionManager.sessions.size,
+        activeSessions: stats.totalSessions,
         maxSessions: CONFIG.MAX_SESSIONS,
         sessionDetails: Array.from(sessionManager.sessions.entries()).map(([id, s]) => ({
             id: id.slice(0, 12) + '...',
@@ -713,9 +1046,9 @@ app.get('/health', (req, res) => {
             hasCurrentExecution: !!s.currentExecution,
             cellCount: s.cellCount || 0
         })),
-        completedExecutions: sessionManager.completedExecutions.size,
-        activeExecutions: sessionManager.activeExecutions.size,
-        queuedExecutions: sessionManager.executionQueue.size,
+        completedExecutions: stats.completedExecutions,
+        activeExecutions: stats.activeExecutions,
+        queuedExecutions: stats.queuedExecutions,
         uptime: process.uptime(),
         memoryUsage: {
             rss: formatMemory(memUsage.rss),
@@ -724,7 +1057,7 @@ app.get('/health', (req, res) => {
             external: formatMemory(memUsage.external),
             arrayBuffers: formatMemory(memUsage.arrayBuffers)
         },
-        timestamp: new Date().toISOString(),
+        timestamp: now,
         colabBinary: colab.binary,
         usePythonModule: colab.usePythonModule,
         hasAuthToken: !!CONFIG.COLAB_AUTH_TOKEN,
@@ -733,14 +1066,17 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/health/simple', (req, res) => {
+    const stats = sessionManager.getStats();
     res.json({
         status: 'up',
         timestamp: new Date().toISOString(),
-        sessions: sessionManager.sessions.size
+        sessions: stats.totalSessions
     });
 });
 
 app.get('/debug/sessions', authMiddleware, async (req, res) => {
+    logger.info(`🔍 DEBUG SESSIONS LIST`, { traceId: req.traceId });
+    
     const memUsage = process.memoryUsage();
     const sessionData = [];
     let totalCells = 0;
@@ -789,9 +1125,12 @@ app.get('/debug/sessions', authMiddleware, async (req, res) => {
 
 app.get('/debug/sessions/:sessionId', authMiddleware, async (req, res) => {
     const { sessionId } = req.params;
+    logger.info(`🔍 DEBUG SESSION DETAIL`, { traceId: req.traceId, sessionId: sessionId.substring(0, 16) });
+    
     const session = sessionManager.sessions.get(sessionId);
     
     if (!session) {
+        logger.warn(`❌ SESSION NOT FOUND`, { sessionId: sessionId.substring(0, 16) });
         return res.status(404).json({ error: 'Session not found in memory' });
     }
 
@@ -821,9 +1160,18 @@ app.get('/debug/sessions/:sessionId', authMiddleware, async (req, res) => {
 });
 
 app.post('/start', authMiddleware, async (req, res, next) => {
+    const traceId = req.traceId;
+    logger.info(`🆕 SESSION CREATE REQUEST`, { traceId });
+    
     try {
+        // Check max sessions
         if (sessionManager.sessions.size >= CONFIG.MAX_SESSIONS) {
-            logger.info(`Max sessions reached (${sessionManager.sessions.size}/${CONFIG.MAX_SESSIONS})`);
+            logger.warn(`⚠️ MAX SESSIONS REACHED`, {
+                traceId,
+                current: sessionManager.sessions.size,
+                max: CONFIG.MAX_SESSIONS
+            });
+            
             let oldestSessionId = null;
             let oldestTime = Infinity;
             
@@ -836,22 +1184,31 @@ app.post('/start', authMiddleware, async (req, res, next) => {
             
             if (oldestSessionId) {
                 const session = sessionManager.sessions.get(oldestSessionId);
-                logger.info(`Killing oldest session: ${oldestSessionId}`);
+                logger.info(`🗑️ KILLING OLDEST SESSION`, {
+                    traceId,
+                    sessionId: oldestSessionId.substring(0, 16),
+                    colabSession: session.colabSession,
+                    idleTime: Math.floor((Date.now() - session.lastActivity) / 60000) + 'm'
+                });
                 try {
                     await colab.run(['stop', '-s', session.colabSession], 10000);
                 } catch (error) {
-                    logger.warn(`Could not stop session remotely: ${error.message}`);
+                    logger.warn(`⚠️ Could not stop session remotely`, { error: error.message });
                 }
                 await sessionManager.cleanupSessionFolder(oldestSessionId);
                 sessionManager.sessions.delete(oldestSessionId);
-                logger.info(`Removed session ${oldestSessionId}`);
+                logger.info(`✅ REMOVED OLDEST SESSION`, { sessionId: oldestSessionId.substring(0, 16) });
             }
         }
 
         const sessionId = generateSessionId();
         const colabSessionName = `colab_${sessionId.substring(0, 12)}`;
 
-        logger.info(`Creating new session: ${sessionId}`);
+        logger.info(`📝 CREATING NEW SESSION`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16),
+            colabSession: colabSessionName
+        });
 
         await sessionManager.createSessionFolder(sessionId);
         
@@ -870,6 +1227,8 @@ app.post('/start', authMiddleware, async (req, res, next) => {
         );
         await fs.writeFile(dataFile, JSON.stringify(initialData, null, 2));
         
+        logger.debug(`📁 Session data initialized`, { sessionId: sessionId.substring(0, 16), dataFile });
+        
         await colab.run(['new', '--gpu', 'T4', '-s', colabSessionName], 60000);
         
         sessionManager.sessions.set(sessionId, {
@@ -883,7 +1242,7 @@ app.post('/start', authMiddleware, async (req, res, next) => {
             executionCount: 0
         });
 
-        logger.info(`Session created successfully: ${sessionId}`);
+        logger.sessionCreated(sessionId, colabSessionName, sessionManager.sessions.size);
 
         res.json({
             success: true,
@@ -895,19 +1254,35 @@ app.post('/start', authMiddleware, async (req, res, next) => {
             message: 'Session created successfully'
         });
     } catch (error) {
-        logger.error(`Session creation failed: ${error.message}`);
+        logger.error(`❌ SESSION CREATION FAILED`, {
+            traceId,
+            error: error.message,
+            stack: error.stack
+        });
         next(new Error('Failed to create session'));
     }
 });
 
 app.post('/keepalive', authMiddleware, async (req, res, next) => {
     const { sessionId } = req.body;
+    const traceId = req.traceId;
+    
     if (!sessionId) {
+        logger.warn(`⚠️ KEEPALIVE: NO SESSION ID`, { traceId });
         return res.status(400).json({ error: 'sessionId required' });
     }
 
+    logger.debug(`💓 KEEPALIVE REQUEST`, {
+        traceId,
+        sessionId: sessionId.substring(0, 16)
+    });
+
     const session = sessionManager.sessions.get(sessionId);
     if (!session) {
+        logger.warn(`⚠️ KEEPALIVE: SESSION NOT FOUND`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16)
+        });
         return res.status(404).json({ error: 'Session not found' });
     }
 
@@ -915,25 +1290,54 @@ app.post('/keepalive', authMiddleware, async (req, res, next) => {
         await colab.run(['sessions'], 10000);
         session.lastActivity = Date.now();
         sessionManager.sessions.set(sessionId, session);
+        logger.debug(`✅ KEEPALIVE SUCCESS`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16),
+            lastActivity: new Date(session.lastActivity).toISOString()
+        });
         res.json({ success: true, message: 'Session kept alive' });
     } catch (error) {
+        logger.error(`❌ KEEPALIVE FAILED`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16),
+            error: error.message
+        });
         res.status(500).json({ error: 'Keepalive failed', details: error.message });
     }
 });
 
 app.post('/run', authMiddleware, async (req, res, next) => {
     const { sessionId, code, cellNo } = req.body;
+    const traceId = req.traceId;
     
     if (!sessionId || !code || cellNo === undefined) {
+        logger.warn(`⚠️ RUN: MISSING FIELDS`, {
+            traceId,
+            hasSessionId: !!sessionId,
+            hasCode: !!code,
+            hasCellNo: cellNo !== undefined
+        });
         return res.status(400).json({ error: 'Missing required fields: sessionId, code, cellNo' });
     }
 
+    logger.info(`▶️ RUN REQUEST`, {
+        traceId,
+        sessionId: sessionId.substring(0, 16),
+        cellNo,
+        codeLength: code.length
+    });
+
     const session = sessionManager.sessions.get(sessionId);
     if (!session) {
+        logger.warn(`⚠️ RUN: SESSION NOT FOUND`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16)
+        });
         return res.status(404).json({ error: 'Session not found' });
     }
 
     if (session.status === 'busy') {
+        logger.sessionBusy(sessionId, session.currentExecution?.executionId);
         return res.status(409).json({ 
             error: 'Session busy',
             currentExecution: session.currentExecution
@@ -942,6 +1346,8 @@ app.post('/run', authMiddleware, async (req, res, next) => {
 
     const executionId = generateExecutionId();
     const validCellNo = parseInt(cellNo, 10);
+
+    logger.executionStarted(sessionId, executionId, validCellNo, code);
 
     session.status = 'busy';
     session.lastActivity = Date.now();
@@ -959,14 +1365,12 @@ app.post('/run', authMiddleware, async (req, res, next) => {
         type: 'execution_start',
         cellNo: validCellNo,
         startedAt: new Date().toISOString(),
-        code: code.substring(0, 200),
+        code: getCodeSnippet(code, 200),
         status: 'started'
     };
     await sessionManager.appendSessionData(sessionId, cellStartData);
 
     backgroundExecution(sessionId, validCellNo, code, executionId, colab, sessionManager);
-
-    logger.info(`Execution started: ${executionId}`, { sessionId, cellNo: validCellNo });
 
     res.json({
         status: 'processing',
@@ -979,12 +1383,27 @@ app.post('/run', authMiddleware, async (req, res, next) => {
 
 app.post('/status', authMiddleware, async (req, res) => {
     const { sessionId, executionId } = req.body;
+    const traceId = req.traceId;
+    
     if (!sessionId || !executionId) {
+        logger.warn(`⚠️ STATUS: MISSING FIELDS`, { traceId });
         return res.status(400).json({ error: 'Missing required fields: sessionId, executionId' });
     }
 
+    logger.trace(`📊 STATUS POLL`, {
+        traceId,
+        sessionId: sessionId.substring(0, 16),
+        executionId: executionId.substring(0, 16)
+    });
+
+    // Check completed executions
     if (sessionManager.completedExecutions.has(executionId)) {
         const record = sessionManager.completedExecutions.get(executionId);
+        logger.trace(`✅ STATUS: COMPLETED`, {
+            traceId,
+            executionId: executionId.substring(0, 16),
+            status: record.status
+        });
         return res.json({
             status: record.status,
             output: record.output,
@@ -994,9 +1413,15 @@ app.post('/status', authMiddleware, async (req, res) => {
         });
     }
 
+    // Check active execution
     const active = sessionManager.activeExecutions.get(executionId);
     if (active) {
         const elapsed = Date.now() - active.startedAt;
+        logger.trace(`🔄 STATUS: RUNNING`, {
+            traceId,
+            executionId: executionId.substring(0, 16),
+            elapsed: Math.floor(elapsed / 1000) + 's'
+        });
         return res.json({
             status: 'running',
             elapsed: elapsed,
@@ -1005,16 +1430,27 @@ app.post('/status', authMiddleware, async (req, res) => {
         });
     }
 
+    // Check session current execution
     const session = sessionManager.sessions.get(sessionId);
     if (session && session.currentExecution?.executionId === executionId) {
+        const elapsed = Date.now() - session.currentExecution.startedAt;
+        logger.trace(`🔄 STATUS: RUNNING (from session)`, {
+            traceId,
+            executionId: executionId.substring(0, 16),
+            elapsed: Math.floor(elapsed / 1000) + 's'
+        });
         return res.json({
             status: 'running',
-            elapsed: Date.now() - session.currentExecution.startedAt,
+            elapsed: elapsed,
             partialOutput: session.currentExecution.partialOutput || '',
             partialError: session.currentExecution.partialError || ''
         });
     }
 
+    logger.trace(`❓ STATUS: NOT FOUND`, {
+        traceId,
+        executionId: executionId.substring(0, 16)
+    });
     res.json({ 
         status: 'not_found',
         message: 'Execution not found or already completed'
@@ -1023,18 +1459,33 @@ app.post('/status', authMiddleware, async (req, res) => {
 
 app.post('/status/ack', authMiddleware, async (req, res) => {
     const { executionId } = req.body;
+    const traceId = req.traceId;
+    
     if (executionId && sessionManager.completedExecutions.has(executionId)) {
         sessionManager.completedExecutions.delete(executionId);
+        logger.debug(`✅ STATUS ACKNOWLEDGED`, { traceId, executionId: executionId.substring(0, 16) });
         res.json({ success: true, message: 'Acknowledged' });
     } else {
+        logger.debug(`❓ STATUS ACK: NOT FOUND`, { traceId, executionId: executionId?.substring(0, 16) });
         res.json({ success: false, message: 'Execution not found' });
     }
 });
 
 app.delete('/session/:sessionId', authMiddleware, async (req, res, next) => {
     const { sessionId } = req.params;
+    const traceId = req.traceId;
+    
+    logger.info(`🗑️ SESSION DELETE REQUEST`, {
+        traceId,
+        sessionId: sessionId.substring(0, 16)
+    });
+
     const session = sessionManager.sessions.get(sessionId);
     if (!session) {
+        logger.warn(`⚠️ DELETE: SESSION NOT FOUND`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16)
+        });
         return res.status(404).json({ error: 'Session not found' });
     }
 
@@ -1042,10 +1493,14 @@ app.delete('/session/:sessionId', authMiddleware, async (req, res, next) => {
         await colab.run(['stop', '-s', session.colabSession], 30000);
         await sessionManager.cleanupSessionFolder(sessionId);
         sessionManager.sessions.delete(sessionId);
-        logger.info(`Session deleted: ${sessionId}`);
+        logger.sessionDeleted(sessionId, 'manual');
         res.json({ success: true, message: 'Session terminated' });
     } catch (error) {
-        logger.warn(`Session deletion error: ${error.message}`);
+        logger.warn(`⚠️ SESSION DELETE PARTIAL`, {
+            traceId,
+            sessionId: sessionId.substring(0, 16),
+            error: error.message
+        });
         await sessionManager.cleanupSessionFolder(sessionId);
         sessionManager.sessions.delete(sessionId);
         res.json({ 
@@ -1060,6 +1515,11 @@ app.delete('/session/:sessionId', authMiddleware, async (req, res, next) => {
 // ============================================
 
 app.use((req, res) => {
+    logger.warn(`❓ 404 NOT FOUND`, {
+        method: req.method,
+        path: req.path,
+        ip: req.ip || req.get('x-forwarded-for') || 'unknown'
+    });
     res.status(404).json({
         error: 'Not Found',
         message: 'This is an API-only server. Available endpoints:',
@@ -1088,22 +1548,33 @@ async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     
-    logger.info(`Received ${signal}, starting graceful shutdown...`);
+    logger.info(`🛑 RECEIVED ${signal}, STARTING GRACEFUL SHUTDOWN...`);
+    
+    const stats = sessionManager.getStats();
+    logger.info(`📊 SHUTDOWN STATS`, {
+        activeSessions: stats.totalSessions,
+        activeExecutions: stats.activeExecutions,
+        queued: stats.queuedExecutions
+    });
     
     for (const sessionId of sessionManager.sessions.keys()) {
         try {
             const session = sessionManager.sessions.get(sessionId);
             if (session) {
+                logger.debug(`🧹 Cleaning session`, { sessionId: sessionId.substring(0, 16) });
                 await colab.run(['stop', '-s', session.colabSession], 10000);
                 await sessionManager.cleanupSessionFolder(sessionId);
                 sessionManager.sessions.delete(sessionId);
             }
         } catch (error) {
-            logger.warn(`Failed to clean up session ${sessionId}: ${error.message}`);
+            logger.warn(`⚠️ Failed to clean up session`, {
+                sessionId: sessionId.substring(0, 16),
+                error: error.message
+            });
         }
     }
     
-    logger.info('Shutdown complete');
+    logger.info(`✅ GRACEFUL SHUTDOWN COMPLETE`);
     process.exit(0);
 }
 
@@ -1111,12 +1582,15 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception:', { error: error.message });
+    logger.error(`💥 UNCAUGHT EXCEPTION`, {
+        error: error.message,
+        stack: error.stack
+    });
     gracefulShutdown('UNCAUGHT_EXCEPTION');
 });
 
 process.on('unhandledRejection', (reason) => {
-    logger.error('Unhandled rejection:', { reason });
+    logger.error(`💥 UNHANDLED REJECTION`, { reason });
 });
 
 // ============================================
@@ -1128,12 +1602,13 @@ const sessionManager = new SessionManager(CONFIG.SESSIONS_BASE_DIR);
 
 async function init() {
     try {
-        logger.info('🚀 Initializing Colab Orchestrator v2.0 (API-Only)...');
+        logger.info('🚀 INITIALIZING COLAB ORCHESTRATOR v2.0 (API-Only)');
+        logger.info(`📊 LOG LEVEL: ${CONFIG.LOG_LEVEL}`);
         
         await colab.initialize();
         
         await fs.mkdir(CONFIG.SESSIONS_BASE_DIR, { recursive: true });
-        logger.info(`📁 Sessions directory: ${CONFIG.SESSIONS_BASE_DIR}`);
+        logger.info(`📁 SESSIONS DIRECTORY: ${CONFIG.SESSIONS_BASE_DIR}`);
         
         await setupColabAuth();
         await colab.testConnection();
@@ -1145,30 +1620,35 @@ async function init() {
         const PORT = CONFIG.PORT;
         app.listen(PORT, () => {
             console.log(`
-╔══════════════════════════════════════════════════════════╗
-║  🚀 Colab Orchestrator v2.0 (API-Only)                 ║
-╠══════════════════════════════════════════════════════════╣
-║  📡 Port: ${PORT}                                              ║
-║  📁 Sessions: ${CONFIG.SESSIONS_BASE_DIR}       ║
-║  🔧 Binary: ${colab.binary} ${colab.usePythonModule ? '(-m colab_cli)' : ''}
-║  📊 Max Sessions: ${CONFIG.MAX_SESSIONS}                                      ║
-║  🔐 Auth: ${CONFIG.COLAB_AUTH_TOKEN ? '✅ Configured' : '❌ Not configured'}                             ║
-║  ⏰ Session Timeout: ${CONFIG.SESSION_TIMEOUT / 1000 / 60 / 60}h                            ║
-║  ⏱️  Execution Timeout: ${CONFIG.EXECUTION_TIMEOUT / 60}m                              ║
-║  🔒 CORS: ${allowedOrigins.length} allowed origins                         ║
-║  🌐 Environment: ${CONFIG.NODE_ENV}                                        ║
-║  📦 API-Only: No static files served                       ║
-╚══════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════╗
+║  🚀  COLAB ORCHESTRATOR v2.0 (API-Only)                         ║
+╠═══════════════════════════════════════════════════════════════════╣
+║  📡  Port: ${PORT}                                                       ║
+║  📁  Sessions: ${CONFIG.SESSIONS_BASE_DIR}                ║
+║  🔧  Binary: ${colab.binary} ${colab.usePythonModule ? '(-m colab_cli)' : ''}
+║  📊  Max Sessions: ${CONFIG.MAX_SESSIONS}                                               ║
+║  🔐  Auth: ${CONFIG.COLAB_AUTH_TOKEN ? '✅ Configured' : '❌ Not configured'}                                      ║
+║  ⏰  Session Timeout: ${CONFIG.SESSION_TIMEOUT / 1000 / 60 / 60}h                                     ║
+║  ⏱️   Execution Timeout: ${CONFIG.EXECUTION_TIMEOUT / 60}m                                       ║
+║  🔒  CORS: ${allowedOrigins.length} allowed origins                                  ║
+║  🌐  Environment: ${CONFIG.NODE_ENV}                                                 ║
+║  📦  API-Only: No static files served                                    ║
+║  📝  Log Level: ${CONFIG.LOG_LEVEL}                                                 ║
+╚═══════════════════════════════════════════════════════════════════╝
             `);
             
             logger.info(`🌐 API server running on http://localhost:${PORT}`);
             logger.info(`🔑 API Secret: ${CONFIG.API_SECRET === 'kushalkumarjthegreat' ? '⚠️ Default' : '✅ Custom'}`);
             logger.info(`📊 Health check: http://localhost:${PORT}/health`);
             logger.info(`📋 API docs: http://localhost:${PORT}/ (shows endpoints)`);
+            logger.info(`🔍 Debug: Set LOG_LEVEL=trace for maximum verbosity`);
         });
         
     } catch (error) {
-        logger.error('Fatal initialization error:', { error: error.message });
+        logger.error('❌ FATAL INITIALIZATION ERROR', {
+            error: error.message,
+            stack: error.stack
+        });
         process.exit(1);
     }
 }
